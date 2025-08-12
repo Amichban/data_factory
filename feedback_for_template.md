@@ -311,3 +311,157 @@ Status is maintained through multiple touchpoints:
 4. **Add Status Labels** - Pre-create status labels on repo initialization
 5. **Projects v2 Integration** - Update to use new Projects API (GraphQL)
 6. **Documentation** - Add clear setup instructions for the PM workflow
+
+### 5. GitHub Projects v2 GraphQL Integration
+
+**Issue:**
+The current project board automation attempts to use the deprecated Classic Projects API, resulting in the error: "Projects (classic) has been deprecated in favor of the new Projects experience."
+
+**Impact:**
+- Project boards remain empty
+- No automatic card movement between columns
+- Manual intervention required for all board updates
+
+**Required GraphQL Implementation:**
+
+To properly integrate with Projects v2, the template needs to use GitHub's GraphQL API:
+
+```javascript
+// Example: Add issue to project and update status field
+const mutation = `
+  mutation($projectId: ID!, $contentId: ID!, $statusFieldId: ID!, $statusValue: String!) {
+    addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+      item {
+        id
+      }
+    }
+    updateProjectV2ItemFieldValue(
+      input: {
+        projectId: $projectId,
+        itemId: $itemId,
+        fieldId: $statusFieldId,
+        value: {singleSelectOptionId: $statusValue}
+      }
+    ) {
+      projectV2Item {
+        id
+      }
+    }
+  }
+`;
+```
+
+**Implementation Steps:**
+
+1. **Get Project ID**: Query for the project using GraphQL
+2. **Get Field IDs**: Query for Status field and its option IDs
+3. **Add Issues**: Use `addProjectV2ItemById` mutation
+4. **Update Status**: Use `updateProjectV2ItemFieldValue` mutation
+
+**Complete Workflow Example:**
+
+```yaml
+- name: Update Project Board v2
+  uses: actions/github-script@v6
+  with:
+    github-token: ${{ secrets.PROJECT_TOKEN }} # Needs project scope
+    script: |
+      // Get project ID
+      const projectQuery = `
+        query($owner: String!, $repo: String!) {
+          repository(owner: $owner, name: $repo) {
+            projectsV2(first: 1) {
+              nodes {
+                id
+                title
+                fields(first: 20) {
+                  nodes {
+                    ... on ProjectV2SingleSelectField {
+                      id
+                      name
+                      options {
+                        id
+                        name
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `;
+      
+      const projectResult = await github.graphql(projectQuery, {
+        owner: context.repo.owner,
+        repo: context.repo.repo
+      });
+      
+      const project = projectResult.repository.projectsV2.nodes[0];
+      const statusField = project.fields.nodes.find(f => f.name === 'Status');
+      const todoOption = statusField.options.find(o => o.name === 'Todo');
+      
+      // Add issue to project
+      const addMutation = `
+        mutation($projectId: ID!, $contentId: ID!) {
+          addProjectV2ItemById(input: {
+            projectId: $projectId,
+            contentId: $contentId
+          }) {
+            item {
+              id
+            }
+          }
+        }
+      `;
+      
+      const item = await github.graphql(addMutation, {
+        projectId: project.id,
+        contentId: issue.node_id
+      });
+      
+      // Update status
+      const updateMutation = `
+        mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+          updateProjectV2ItemFieldValue(input: {
+            projectId: $projectId,
+            itemId: $itemId,
+            fieldId: $fieldId,
+            value: {singleSelectOptionId: $optionId}
+          }) {
+            projectV2Item {
+              id
+            }
+          }
+        }
+      `;
+      
+      await github.graphql(updateMutation, {
+        projectId: project.id,
+        itemId: item.addProjectV2ItemById.item.id,
+        fieldId: statusField.id,
+        optionId: todoOption.id
+      });
+```
+
+**Challenges:**
+
+1. **Authentication**: Requires PAT or GitHub App with `project` scope (not available to default GITHUB_TOKEN)
+2. **Complexity**: GraphQL queries are more complex than REST API
+3. **Field Discovery**: Must query for field IDs and option IDs dynamically
+4. **Error Handling**: GraphQL errors are nested and harder to handle
+
+**Workaround for Template:**
+
+Until GraphQL integration is implemented, the template should:
+1. Document the manual setup process for Projects v2
+2. Rely on status labels as the source of truth
+3. Provide CLI scripts to view board status via labels
+4. Include instructions for manual board synchronization
+
+**Alternative Solutions:**
+
+1. **GitHub CLI Extension**: Create a `gh` extension for board management
+2. **External Service**: Use a webhook receiver to sync labels with project board
+3. **GitHub App**: Create a GitHub App with project permissions
+4. **Manual Process**: Document the manual steps clearly for users
