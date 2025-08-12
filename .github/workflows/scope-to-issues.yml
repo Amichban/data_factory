@@ -21,6 +21,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Ensure status labels exist
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const labels = [
+              { name: 'status:backlog', color: 'E4E669', description: 'Issue is in backlog' },
+              { name: 'status:todo', color: 'FEF2C0', description: 'Ready to start work' },
+              { name: 'status:in-progress', color: '3F83F8', description: 'Work in progress' },
+              { name: 'status:review', color: 'FBCA04', description: 'In review' },
+              { name: 'status:blocked', color: 'D73A4A', description: 'Blocked by dependency' },
+              { name: 'status:done', color: '0E8A16', description: 'Completed' }
+            ];
+            
+            for (const label of labels) {
+              try {
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: label.name
+                });
+                console.log(`Label ${label.name} already exists`);
+              } catch (error) {
+                if (error.status === 404) {
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: label.name,
+                    color: label.color,
+                    description: label.description
+                  });
+                  console.log(`Created label ${label.name}`);
+                }
+              }
+            }
+      
       - name: Parse scope and create issues
         uses: actions/github-script@v6
         with:
@@ -65,7 +100,7 @@ jobs:
               body += `\n---\n_Generated from intent issue #${scope.source_issue}_`;
               
               // Determine labels based on available data
-              const labels = ['vertical-slice'];
+              const labels = ['vertical-slice', 'status:backlog'];
               const points = estimateToPoints[slice.estimate] || 5;
               labels.push(`points:${points}`);
               

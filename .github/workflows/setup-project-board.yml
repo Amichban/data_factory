@@ -1,0 +1,124 @@
+name: Setup Project Board
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [setup-project]
+
+jobs:
+  setup-board:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      repository-projects: write
+      
+    steps:
+      - name: Create Project Board
+        uses: actions/github-script@v6
+        with:
+          script: |
+            try {
+              // Check if project already exists
+              const { data: projects } = await github.rest.projects.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo
+              });
+              
+              let project;
+              
+              if (projects.length === 0) {
+                // Create new project
+                const { data: newProject } = await github.rest.projects.createForRepo({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: 'Development Board',
+                  body: 'Automated project board for tracking development progress'
+                });
+                project = newProject;
+                console.log(`Created project: ${project.name}`);
+              } else {
+                project = projects[0];
+                console.log(`Using existing project: ${project.name}`);
+              }
+              
+              // Get existing columns
+              const { data: columns } = await github.rest.projects.listColumns({
+                project_id: project.id
+              });
+              
+              const columnNames = columns.map(c => c.name);
+              
+              // Define required columns in order
+              const requiredColumns = [
+                'Backlog',
+                'Todo',
+                'In Progress',
+                'Review',
+                'Blocked',
+                'Done'
+              ];
+              
+              // Create missing columns
+              for (const columnName of requiredColumns) {
+                if (!columnNames.includes(columnName)) {
+                  await github.rest.projects.createColumn({
+                    project_id: project.id,
+                    name: columnName
+                  });
+                  console.log(`Created column: ${columnName}`);
+                } else {
+                  console.log(`Column already exists: ${columnName}`);
+                }
+              }
+              
+              // Add all existing issues to backlog
+              const { data: issues } = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                per_page: 100
+              });
+              
+              const backlogColumn = columns.find(c => c.name === 'Backlog') || 
+                                  await github.rest.projects.createColumn({
+                                    project_id: project.id,
+                                    name: 'Backlog'
+                                  }).then(r => r.data);
+              
+              for (const issue of issues) {
+                try {
+                  // Check if card already exists
+                  const { data: cards } = await github.rest.projects.listCards({
+                    column_id: backlogColumn.id
+                  });
+                  
+                  const exists = cards.some(card => 
+                    card.content_url && card.content_url.includes(`/issues/${issue.number}`)
+                  );
+                  
+                  if (!exists) {
+                    await github.rest.projects.createCard({
+                      column_id: backlogColumn.id,
+                      content_id: issue.id,
+                      content_type: 'Issue'
+                    });
+                    console.log(`Added issue #${issue.number} to backlog`);
+                  }
+                } catch (error) {
+                  console.log(`Could not add issue #${issue.number}: ${error.message}`);
+                }
+              }
+              
+              console.log('Project board setup complete!');
+              
+              // Create summary
+              core.summary
+                .addHeading('Project Board Setup Complete')
+                .addRaw(`Project: ${project.name}\n`)
+                .addRaw(`Columns: ${requiredColumns.join(', ')}\n`)
+                .addRaw(`Issues added to backlog: ${issues.length}\n`)
+                .write();
+              
+            } catch (error) {
+              core.setFailed(`Failed to setup project board: ${error.message}`);
+            }

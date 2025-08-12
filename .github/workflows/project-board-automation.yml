@@ -1,0 +1,267 @@
+name: Project Board Automation
+
+on:
+  issues:
+    types: [opened, closed, reopened, assigned, unassigned, labeled, unlabeled]
+  pull_request:
+    types: [opened, closed, reopened, review_requested, review_request_removed]
+  issue_comment:
+    types: [created]
+
+jobs:
+  update-project-board:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      repository-projects: write
+      
+    steps:
+      - name: Update Project Board Based on Status
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const issue = context.payload.issue || context.payload.pull_request;
+            if (!issue) return;
+            
+            // Define status labels and their corresponding project columns
+            const statusMap = {
+              'status:backlog': 'Backlog',
+              'status:todo': 'Todo',
+              'status:in-progress': 'In Progress',
+              'status:review': 'Review',
+              'status:done': 'Done',
+              'status:blocked': 'Blocked'
+            };
+            
+            // Helper function to move card to column
+            async function moveCardToColumn(issue, columnName) {
+              try {
+                // Get all projects for the repo
+                const { data: projects } = await github.rest.projects.listForRepo({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  state: 'open'
+                });
+                
+                if (projects.length === 0) {
+                  console.log('No projects found');
+                  return;
+                }
+                
+                const project = projects[0];
+                
+                // Get columns for the project
+                const { data: columns } = await github.rest.projects.listColumns({
+                  project_id: project.id
+                });
+                
+                const targetColumn = columns.find(col => col.name === columnName);
+                if (!targetColumn) {
+                  console.log(`Column ${columnName} not found`);
+                  return;
+                }
+                
+                // Check if card already exists
+                const { data: cards } = await github.rest.projects.listCards({
+                  column_id: targetColumn.id
+                });
+                
+                const existingCard = cards.find(card => 
+                  card.content_url && card.content_url.includes(`/issues/${issue.number}`)
+                );
+                
+                if (existingCard) {
+                  console.log(`Issue #${issue.number} already in ${columnName}`);
+                  return;
+                }
+                
+                // Find card in other columns and move it
+                for (const column of columns) {
+                  if (column.id === targetColumn.id) continue;
+                  
+                  const { data: cards } = await github.rest.projects.listCards({
+                    column_id: column.id
+                  });
+                  
+                  const card = cards.find(c => 
+                    c.content_url && c.content_url.includes(`/issues/${issue.number}`)
+                  );
+                  
+                  if (card) {
+                    await github.rest.projects.moveCard({
+                      card_id: card.id,
+                      position: 'top',
+                      column_id: targetColumn.id
+                    });
+                    console.log(`Moved issue #${issue.number} from ${column.name} to ${columnName}`);
+                    return;
+                  }
+                }
+                
+                // Card doesn't exist, create it
+                await github.rest.projects.createCard({
+                  column_id: targetColumn.id,
+                  content_id: issue.id,
+                  content_type: 'Issue'
+                });
+                console.log(`Added issue #${issue.number} to ${columnName}`);
+                
+              } catch (error) {
+                console.log(`Error updating project board: ${error.message}`);
+              }
+            }
+            
+            // Handle different event types
+            if (context.eventName === 'issues') {
+              const action = context.payload.action;
+              
+              if (action === 'opened') {
+                // New issues go to Backlog
+                await moveCardToColumn(issue, 'Backlog');
+                
+                // Add default status label
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  labels: ['status:backlog']
+                });
+              }
+              
+              if (action === 'labeled' || action === 'unlabeled') {
+                // Check for status labels
+                const labels = issue.labels.map(l => l.name);
+                const statusLabel = labels.find(l => l.startsWith('status:'));
+                
+                if (statusLabel && statusMap[statusLabel]) {
+                  await moveCardToColumn(issue, statusMap[statusLabel]);
+                  
+                  // Remove other status labels
+                  for (const label of labels) {
+                    if (label.startsWith('status:') && label !== statusLabel) {
+                      await github.rest.issues.removeLabel({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: issue.number,
+                        name: label
+                      });
+                    }
+                  }
+                }
+              }
+              
+              if (action === 'closed') {
+                await moveCardToColumn(issue, 'Done');
+                
+                // Update status label
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  labels: ['status:done']
+                });
+                
+                // Update meta issue if this is a vertical slice
+                if (issue.labels.some(l => l.name === 'vertical-slice')) {
+                  await updateMetaIssue(issue.number);
+                }
+              }
+              
+              if (action === 'reopened') {
+                await moveCardToColumn(issue, 'Todo');
+                
+                // Update status label
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  labels: ['status:todo']
+                });
+              }
+            }
+            
+            // Handle issue comments for status commands
+            if (context.eventName === 'issue_comment' && context.payload.action === 'created') {
+              const comment = context.payload.comment.body.toLowerCase();
+              
+              const commands = {
+                '/status:todo': { column: 'Todo', label: 'status:todo' },
+                '/status:in-progress': { column: 'In Progress', label: 'status:in-progress' },
+                '/status:review': { column: 'Review', label: 'status:review' },
+                '/status:blocked': { column: 'Blocked', label: 'status:blocked' },
+                '/status:done': { column: 'Done', label: 'status:done' }
+              };
+              
+              for (const [cmd, config] of Object.entries(commands)) {
+                if (comment.includes(cmd)) {
+                  await moveCardToColumn(issue, config.column);
+                  
+                  // Remove all status labels
+                  const labels = issue.labels.map(l => l.name);
+                  for (const label of labels) {
+                    if (label.startsWith('status:')) {
+                      await github.rest.issues.removeLabel({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: issue.number,
+                        name: label
+                      });
+                    }
+                  }
+                  
+                  // Add new status label
+                  await github.rest.issues.addLabels({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    labels: [config.label]
+                  });
+                  
+                  // Add confirmation comment
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    body: `✅ Status updated to **${config.label.replace('status:', '')}**`
+                  });
+                  
+                  break;
+                }
+              }
+            }
+            
+            // Function to update meta issue checkboxes
+            async function updateMetaIssue(completedIssueNumber) {
+              try {
+                // Find meta issue
+                const { data: issues } = await github.rest.issues.listForRepo({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  labels: 'meta,scope-tracking',
+                  state: 'open'
+                });
+                
+                if (issues.length === 0) return;
+                
+                const metaIssue = issues[0];
+                let body = metaIssue.body;
+                
+                // Update checkbox for completed issue
+                const regex = new RegExp(`- \\[ \\] #${completedIssueNumber}`, 'g');
+                body = body.replace(regex, `- [x] #${completedIssueNumber}`);
+                
+                // Update meta issue body
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: metaIssue.number,
+                  body: body
+                });
+                
+                console.log(`Updated meta issue #${metaIssue.number} for completed slice #${completedIssueNumber}`);
+              } catch (error) {
+                console.log(`Error updating meta issue: ${error.message}`);
+              }
+            }
