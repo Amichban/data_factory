@@ -6,7 +6,8 @@ using Pydantic's BaseSettings class.
 """
 
 from typing import List, Optional, Union
-from pydantic import AnyHttpUrl, BaseSettings, PostgresDsn, validator
+from pydantic import AnyHttpUrl, PostgresDsn, validator
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -37,14 +38,12 @@ class Settings(BaseSettings):
         """Assemble database URL from individual components."""
         if isinstance(v, str):
             return v
-        return PostgresDsn.build(
-            scheme="postgresql+asyncpg",
-            user=values.get("POSTGRES_USER"),
-            password=values.get("POSTGRES_PASSWORD"),
-            host=values.get("POSTGRES_SERVER"),
-            port=str(values.get("POSTGRES_PORT", 5432)),
-            path=f"/{values.get('POSTGRES_DB') or ''}",
-        )
+        user = values.get("POSTGRES_USER")
+        password = values.get("POSTGRES_PASSWORD")
+        host = values.get("POSTGRES_SERVER")
+        port = values.get("POSTGRES_PORT", 5432)
+        db = values.get("POSTGRES_DB")
+        return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
     
     # CORS
     BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = []
@@ -78,6 +77,42 @@ class Settings(BaseSettings):
     
     # Logging
     LOG_LEVEL: str = "INFO"
+    
+    # Market Data Configuration
+    OANDA_API_KEY: Optional[str] = None
+    OANDA_ACCOUNT_ID: Optional[str] = None
+    OANDA_API_URL: str = "https://api-fxpractice.oanda.com"
+    OANDA_STREAM_URL: str = "https://stream-fxpractice.oanda.com"
+    
+    # Market Data Settings
+    SUPPORTED_INSTRUMENTS: List[str] = [
+        "EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF", "AUD_USD", "USD_CAD", "NZD_USD",
+        "EUR_GBP", "EUR_JPY", "GBP_JPY", "CHF_JPY", "EUR_CHF", "AUD_JPY", "GBP_CHF",
+        "NZD_JPY", "CAD_JPY", "AUD_CHF", "AUD_CAD", "AUD_NZD", "CAD_CHF", "EUR_AUD",
+        "EUR_CAD", "EUR_NZD", "GBP_AUD", "GBP_CAD", "GBP_NZD", "NZD_CAD", "NZD_CHF",
+        "USD_SEK"
+    ]
+    SUPPORTED_TIMEFRAMES: List[str] = ["H1", "H4", "D", "W"]
+    
+    # Rate Limiting Configuration
+    MARKET_DATA_RATE_LIMIT: int = 100  # requests per minute
+    MARKET_DATA_BURST_LIMIT: int = 10   # burst limit for concurrent requests
+    MARKET_DATA_RETRY_ATTEMPTS: int = 3
+    MARKET_DATA_RETRY_DELAY: float = 1.0  # seconds
+    
+    # Data Processing Settings
+    BATCH_SIZE: int = 500  # for historical data processing
+    MAX_HISTORICAL_DAYS: int = 90  # maximum days for historical backfill
+    
+    # Feature Flags
+    FEATURE_FLAGS: dict = {
+        "resistance_detection_enabled": False,  # Enable resistance event detection
+        "firestore_enabled": True,
+        "market_data_enabled": False,
+        "batch_processing_enabled": False,
+        "spike_detection_enabled": False,
+        "api_v1_enabled": True
+    }
     
     # Testing
     TESTING: bool = False

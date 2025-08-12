@@ -14,8 +14,9 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.database import create_tables
 from app.middleware.logging import LoggingMiddleware
-from app.routers import health
+from app.routers import health, market_data
 from app.services.firestore_service import firestore_service
+from app.services.market_data_service import market_data_service
 
 
 # Configure structured logging
@@ -45,7 +46,10 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown events."""
     # Startup
     logger.info("Starting up application", app_name=settings.APP_NAME)
-    await create_tables()
+    try:
+        await create_tables()
+    except Exception as e:
+        logger.warning(f"Could not create tables: {e}. Continuing without database.")
     
     # Initialize Firestore if enabled
     if settings.FIRESTORE_ENABLED:
@@ -58,6 +62,8 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down application")
+    # Clean up market data service
+    await market_data_service.close()
 
 
 def create_application() -> FastAPI:
@@ -91,6 +97,11 @@ def create_application() -> FastAPI:
         health.router,
         prefix=settings.API_V1_STR,
         tags=["health"]
+    )
+    app.include_router(
+        market_data.router,
+        prefix=settings.API_V1_STR,
+        tags=["market-data"]
     )
 
     @app.exception_handler(500)
