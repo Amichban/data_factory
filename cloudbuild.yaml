@@ -1,0 +1,56 @@
+steps:
+  # Build API image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/solo-api:$COMMIT_SHA', './apps/api']
+  
+  # Build Web image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/solo-web:$COMMIT_SHA', './apps/web']
+  
+  # Push images
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/solo-api:$COMMIT_SHA']
+  
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/solo-web:$COMMIT_SHA']
+  
+  # Deploy API to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'solo-api'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/solo-api:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--set-env-vars'
+      - 'REDIS_URL=$$REDIS_URL,DATABASE_URL=$$DATABASE_URL'
+  
+  # Deploy Web to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'solo-web'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/solo-web:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--set-env-vars'
+      - 'NEXT_PUBLIC_API_URL=https://solo-api-xxxxx.run.app'
+
+images:
+  - 'gcr.io/$PROJECT_ID/solo-api:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/solo-web:$COMMIT_SHA'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

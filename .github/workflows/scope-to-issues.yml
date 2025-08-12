@@ -1,0 +1,105 @@
+name: Scope to Issues
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope_json:
+        description: 'JSON scope from Claude Code /scope command'
+        required: true
+        type: string
+  repository_dispatch:
+    types: [accept-scope]
+
+jobs:
+  create-issues:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Parse scope and create issues
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const scope = JSON.parse('${{ github.event.inputs.scope_json || github.event.client_payload.scope_json }}');
+            const issues = [];
+            
+            for (const slice of scope.slices) {
+              // Create issue for each vertical slice
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: slice.name,
+                body: `## Vertical Slice: ${slice.name}\n\n${slice.description}\n\n### Acceptance Criteria\n${slice.acceptance_criteria.map(ac => `- [ ] ${ac}`).join('\n')}\n\n### Technical Tasks\n${slice.tasks.map(task => `- [ ] ${task}`).join('\n')}\n\n### Estimated Points: ${slice.points}\n\n---\n_Generated from intent: ${scope.intent_url}_`,
+                labels: ['vertical-slice', `points:${slice.points}`, slice.primary_component],
+                milestone: scope.milestone_number
+              });
+              
+              issues.push(issue.data);
+              console.log(`Created issue #${issue.data.number}: ${slice.name}`);
+            }
+            
+            // Create meta issue linking all slices
+            const metaBody = `## Scope Implementation Tracking\n\n**Intent**: ${scope.intent_url}\n**Total Points**: ${scope.total_points}\n\n### Vertical Slices\n${issues.map(i => `- [ ] #${i.number} - ${i.title}`).join('\n')}\n\n### Timeline\n- Start: ${new Date().toISOString().split('T')[0]}\n- Target: ${scope.target_date}\n\n---\n_This issue tracks the implementation of all vertical slices for this scope._`;
+            
+            const metaIssue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[META] ${scope.intent_title}`,
+              body: metaBody,
+              labels: ['meta', 'scope-tracking'],
+              milestone: scope.milestone_number
+            });
+            
+            console.log(`Created meta issue #${metaIssue.data.number}`);
+            
+            // Update the GitHub Project
+            const projectsResponse = await github.rest.projects.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo
+            });
+            
+            if (projectsResponse.data.length > 0) {
+              const project = projectsResponse.data[0];
+              
+              // Add all issues to project backlog
+              for (const issue of [...issues, metaIssue.data]) {
+                await github.rest.projects.createCard({
+                  column_id: project.columns.find(c => c.name === 'Backlog').id,
+                  content_id: issue.id,
+                  content_type: 'Issue'
+                });
+              }
+            }
+            
+            // Comment on original intent issue
+            if (scope.intent_issue_number) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: scope.intent_issue_number,
+                body: `✅ **Scope Accepted!**\n\nCreated ${issues.length} vertical slice issues:\n${issues.map(i => `- #${i.number} - ${i.title}`).join('\n')}\n\nTracking: #${metaIssue.data.number}`
+              });
+              
+              // Close the intent issue
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: scope.intent_issue_number,
+                state: 'closed',
+                state_reason: 'completed'
+              });
+            }
+            
+            // Output summary
+            core.summary
+              .addHeading('Scope Creation Complete')
+              .addTable([
+                [{data: 'Issue', header: true}, {data: 'Title', header: true}, {data: 'Points', header: true}],
+                ...issues.map(i => [
+                  `#${i.number}`,
+                  i.title,
+                  i.labels.find(l => l.name.startsWith('points:')).name.split(':')[1]
+                ])
+              ])
+              .write();
