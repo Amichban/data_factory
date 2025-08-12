@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     # Redis (for caching, sessions, etc.)
     REDIS_URL: Optional[str] = None
     
+    # Firestore Configuration
+    FIRESTORE_PROJECT_ID: str = "dezoomcamp23"
+    FIRESTORE_EMULATOR_HOST: Optional[str] = None
+    GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None
+    FIRESTORE_ENABLED: bool = True
+    
     # Email (for notifications)
     SMTP_TLS: bool = True
     SMTP_PORT: Optional[int] = None

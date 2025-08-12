@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
+from app.services.firestore_service import firestore_service
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -59,6 +60,20 @@ async def detailed_health_check(db: AsyncSession = Depends(get_db)):
             logger.error("Database health check failed", error=str(e))
             db_status = f"unhealthy: {str(e)}"
 
+        # Firestore connectivity check (if enabled)
+        firestore_status = "disabled"
+        firestore_details = {}
+        
+        if settings.FIRESTORE_ENABLED:
+            try:
+                firestore_health = firestore_service.health_check()
+                firestore_status = firestore_health.get("status", "unknown")
+                firestore_details = firestore_health
+            except Exception as e:
+                logger.error("Firestore health check failed", error=str(e))
+                firestore_status = "unhealthy"
+                firestore_details = {"error": str(e)}
+        
         # System information
         cpu_usage = psutil.cpu_percent(interval=1)
         memory = psutil.virtual_memory()
@@ -77,6 +92,7 @@ async def detailed_health_check(db: AsyncSession = Depends(get_db)):
                 "status": db_status,
                 "response_time_ms": db_response_time,
             },
+            "firestore": firestore_details if firestore_details else {"status": firestore_status},
             "system": {
                 "platform": platform.platform(),
                 "python_version": platform.python_version(),

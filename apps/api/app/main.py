@@ -15,6 +15,7 @@ from app.config import settings
 from app.database import create_tables
 from app.middleware.logging import LoggingMiddleware
 from app.routers import health
+from app.services.firestore_service import firestore_service
 
 
 # Configure structured logging
@@ -45,6 +46,12 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting up application", app_name=settings.APP_NAME)
     await create_tables()
+    
+    # Initialize Firestore if enabled
+    if settings.FIRESTORE_ENABLED:
+        firestore_health = firestore_service.health_check()
+        logger.info("Firestore initialized", status=firestore_health.get("status"))
+    
     logger.info("Application startup complete")
     
     yield
