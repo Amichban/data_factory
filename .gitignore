@@ -119,7 +119,7 @@ temp/
 .dockerignore
 
 # Claude Code
-.claude/out/
+# .claude/out/ is intentionally tracked for GitHub Actions integration
 
 # Secrets
 .secrets
