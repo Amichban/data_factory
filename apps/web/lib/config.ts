@@ -82,6 +82,10 @@ export const featureFlags = {
   enableAnalytics: getBoolEnvVar('NEXT_PUBLIC_ENABLE_ANALYTICS', false),
   enableHealthMonitoring: getBoolEnvVar('NEXT_PUBLIC_ENABLE_HEALTH_MONITORING', true),
   enableDebugMode: getBoolEnvVar('NEXT_PUBLIC_DEBUG', config.environment === 'development'),
+  eventVisualizationEnabled: getBoolEnvVar('NEXT_PUBLIC_EVENT_VISUALIZATION', true),
+  realTimeUI: getBoolEnvVar('NEXT_PUBLIC_REAL_TIME_UI', true),
+  exportEnabled: getBoolEnvVar('NEXT_PUBLIC_EXPORT_ENABLED', true),
+  advancedCharts: getBoolEnvVar('NEXT_PUBLIC_ADVANCED_CHARTS', true),
 } as const;
 
 /**
@@ -135,6 +139,72 @@ export function validateConfig(): { valid: boolean; errors: string[] } {
 export const isDevelopment = config.environment === 'development';
 export const isProduction = config.environment === 'production';
 export const isTest = config.environment === 'test';
+
+/**
+ * Events specific configuration
+ */
+export const eventsConfig = {
+  wsUrl: getEnvVar('NEXT_PUBLIC_WS_URL', 'ws://localhost:8000'),
+  defaultPageSize: 50,
+  maxPageSize: 100,
+  chartHeight: 400,
+  tablePageSizes: [10, 25, 50, 100],
+  dateFormat: 'yyyy-MM-dd HH:mm:ss',
+  numberFormat: {
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 5,
+  },
+} as const;
+
+export const chartConfig = {
+  candlestick: {
+    increasing: { line: { color: '#26a69a' }, fillcolor: '#26a69a' },
+    decreasing: { line: { color: '#ef5350' }, fillcolor: '#ef5350' },
+  },
+  resistance: {
+    color: '#ff9800',
+    width: 2,
+    dash: 'dash',
+  },
+  support: {
+    color: '#2196f3',
+    width: 2,
+    dash: 'dash',
+  },
+  heatmap: {
+    colorscale: 'Viridis',
+    showscale: true,
+  },
+} as const;
+
+export const INSTRUMENTS = [
+  'EUR_USD', 'GBP_USD', 'USD_JPY', 'USD_CHF', 'AUD_USD', 'USD_CAD', 'NZD_USD',
+  'EUR_GBP', 'EUR_JPY', 'GBP_JPY', 'CHF_JPY', 'EUR_CHF', 'AUD_JPY', 'GBP_CHF',
+] as const;
+
+export const TIMEFRAMES = [
+  { value: 'M1', label: '1 Minute' },
+  { value: 'M5', label: '5 Minutes' },
+  { value: 'M15', label: '15 Minutes' },
+  { value: 'M30', label: '30 Minutes' },
+  { value: 'H1', label: '1 Hour' },
+  { value: 'H4', label: '4 Hours' },
+  { value: 'D', label: 'Daily' },
+  { value: 'W', label: 'Weekly' },
+  { value: 'M', label: 'Monthly' },
+] as const;
+
+export const EVENT_TYPES = [
+  { value: 'resistance_bounce', label: 'Resistance Bounce', color: '#ff9800' },
+  { value: 'support_bounce', label: 'Support Bounce', color: '#2196f3' },
+  { value: 'breakout', label: 'Breakout', color: '#4caf50' },
+  { value: 'breakdown', label: 'Breakdown', color: '#f44336' },
+  { value: 'spike', label: 'Spike', color: '#9c27b0' },
+] as const;
+
+// Export for compatibility
+export const API_BASE_URL = config.apiUrl;
+export const WS_BASE_URL = eventsConfig.wsUrl;
 
 /**
  * Export individual configurations for easier importing
