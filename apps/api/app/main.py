@@ -14,7 +14,8 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.database import create_tables
 from app.middleware.logging import LoggingMiddleware
-from app.routers import health, market_data
+from app.middleware.rate_limit import RateLimitMiddleware
+from app.routers import health, market_data, events, statistics
 from app.services.firestore_service import firestore_service
 from app.services.market_data_service import market_data_service
 
@@ -91,6 +92,14 @@ def create_application() -> FastAPI:
 
     # Add custom middleware
     app.add_middleware(LoggingMiddleware)
+    
+    # Add rate limiting middleware
+    app.add_middleware(
+        RateLimitMiddleware,
+        requests_per_minute=settings.MARKET_DATA_RATE_LIMIT,
+        requests_per_hour=settings.MARKET_DATA_RATE_LIMIT * 60,
+        redis_url=settings.REDIS_URL
+    )
 
     # Include routers
     app.include_router(
@@ -103,6 +112,19 @@ def create_application() -> FastAPI:
         prefix=settings.API_V1_STR,
         tags=["market-data"]
     )
+    
+    # Include event management routers
+    if settings.FEATURE_FLAGS.get('api_v1_enabled', True):
+        app.include_router(
+            events.router,
+            prefix=settings.API_V1_STR,
+            tags=["events"]
+        )
+        app.include_router(
+            statistics.router,
+            prefix=settings.API_V1_STR,
+            tags=["statistics"]
+        )
 
     @app.exception_handler(500)
     async def internal_server_error_handler(request, exc):
