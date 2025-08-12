@@ -109,9 +109,11 @@ class Settings(BaseSettings):
         "resistance_detection_enabled": False,  # Enable resistance event detection
         "firestore_enabled": True,
         "market_data_enabled": False,
-        "batch_processing_enabled": False,
+        "batch_processing_enabled": False,  # Enable batch processing engine
+        "parallel_processing": False,  # Enable parallel batch processing
         "spike_detection_enabled": False,
-        "api_v1_enabled": True
+        "api_v1_enabled": True,
+        "max_concurrent_batch_jobs": 2  # Maximum concurrent batch jobs
     }
     
     # Testing

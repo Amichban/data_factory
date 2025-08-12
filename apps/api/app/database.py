@@ -72,6 +72,7 @@ async def create_tables() -> None:
             # Import all models here to ensure they're registered
             from app.models import user  # noqa
             from app.models import resistance_event  # noqa
+            from app.models import batch_job  # noqa
             
             await conn.run_sync(Base.metadata.create_all)
             logger.info("Database tables created successfully")
