@@ -1,0 +1,255 @@
+{
+  "source_issue": 1,
+  "project": {"name": "Product Roadmap"},
+  "slices": [
+    {
+      "id": "firestore-foundation",
+      "title": "Firestore Integration Foundation",
+      "summary": "Establish Firestore connection and basic document structure for storing resistance events and market data",
+      "acceptance_criteria": [
+        "Firestore client connection configured with proper authentication",
+        "Collection schemas defined for events, instruments, and configurations",
+        "Basic CRUD operations implemented for event documents",
+        "Connection health check endpoint returns Firestore status",
+        "Unit tests cover all database operations"
+      ],
+      "dependencies": [],
+      "estimate": "M",
+      "risk": "Medium",
+      "files_touched": [
+        "apps/api/app/core/database.py",
+        "apps/api/app/models/events.py",
+        "apps/api/app/services/firestore_service.py",
+        "apps/api/requirements.txt",
+        "apps/api/tests/test_firestore.py"
+      ],
+      "db_migrations": true,
+      "flags": ["firestore_enabled"]
+    },
+    {
+      "id": "market-data-ingestion",
+      "title": "Market Data Ingestion Pipeline",
+      "summary": "Build pipeline to ingest and store OHLC market data for 29 instruments across 4 timeframes",
+      "acceptance_criteria": [
+        "Data ingestion service supports H1, H4, D, W timeframes",
+        "All 29 instruments are configurable and supported",
+        "Historical data backfill capability for batch processing",
+        "Real-time data streaming for spike mode",
+        "Data validation and error handling for malformed data",
+        "Rate limiting to prevent API quota exhaustion"
+      ],
+      "dependencies": ["firestore-foundation"],
+      "estimate": "L",
+      "risk": "High",
+      "files_touched": [
+        "apps/api/app/services/market_data_service.py",
+        "apps/api/app/models/market_data.py",
+        "apps/api/app/core/config.py",
+        "apps/api/app/tasks/data_ingestion.py",
+        "apps/api/tests/test_market_data.py"
+      ],
+      "db_migrations": true,
+      "flags": ["market_data_enabled", "real_time_streaming"]
+    },
+    {
+      "id": "resistance-detection-algorithm",
+      "title": "Core Resistance Event Detection Algorithm",
+      "summary": "Implement the core algorithm to detect resistance events when green candle is followed by red candle",
+      "acceptance_criteria": [
+        "Algorithm correctly identifies green-to-red candle transitions",
+        "Event detection works across all supported timeframes",
+        "Generated events include timestamp, instrument, timeframe, and OHLC data",
+        "Algorithm handles edge cases and market gaps",
+        "Performance benchmarks show <100ms processing per candle",
+        "Unit tests cover all detection scenarios"
+      ],
+      "dependencies": ["market-data-ingestion"],
+      "estimate": "M",
+      "risk": "Medium",
+      "files_touched": [
+        "apps/api/app/algorithms/resistance_detector.py",
+        "apps/api/app/models/resistance_event.py",
+        "apps/api/app/services/event_processor.py",
+        "apps/api/tests/test_resistance_detection.py"
+      ],
+      "db_migrations": true,
+      "flags": ["resistance_detection_enabled"]
+    },
+    {
+      "id": "batch-processing-engine",
+      "title": "High-Performance Batch Processing Engine",
+      "summary": "Build batch processing system for historical data analysis and bulk event generation",
+      "acceptance_criteria": [
+        "Batch job processes historical data for any date range",
+        "Parallel processing across multiple instruments and timeframes",
+        "Progress tracking and resumable job execution",
+        "Configurable batch size and processing concurrency",
+        "Job scheduling and queue management",
+        "Performance metrics and execution time tracking"
+      ],
+      "dependencies": ["resistance-detection-algorithm"],
+      "estimate": "L",
+      "risk": "High",
+      "files_touched": [
+        "apps/api/app/services/batch_processor.py",
+        "apps/api/app/models/batch_job.py",
+        "apps/api/app/tasks/batch_tasks.py",
+        "apps/api/app/core/queue.py",
+        "apps/api/tests/test_batch_processing.py"
+      ],
+      "db_migrations": true,
+      "flags": ["batch_processing_enabled", "parallel_processing"]
+    },
+    {
+      "id": "spike-detection-system",
+      "title": "Real-time Spike Detection System",
+      "summary": "Implement real-time event detection for live market data processing",
+      "acceptance_criteria": [
+        "Real-time processing of incoming market data streams",
+        "Event detection latency under 5 seconds from data receipt",
+        "WebSocket or streaming API for live event notifications",
+        "Circuit breakers and retry logic for reliability",
+        "Memory-efficient processing without data accumulation",
+        "Graceful handling of connection failures and reconnection"
+      ],
+      "dependencies": ["resistance-detection-algorithm"],
+      "estimate": "L",
+      "risk": "High",
+      "files_touched": [
+        "apps/api/app/services/spike_processor.py",
+        "apps/api/app/websockets/event_stream.py",
+        "apps/api/app/core/streaming.py",
+        "apps/web/lib/websocket.ts",
+        "apps/api/tests/test_spike_detection.py"
+      ],
+      "db_migrations": false,
+      "flags": ["spike_detection_enabled", "real_time_notifications"]
+    },
+    {
+      "id": "event-management-api",
+      "title": "Event Management REST API",
+      "summary": "Create comprehensive REST API for event querying, filtering, and management",
+      "acceptance_criteria": [
+        "RESTful endpoints for event CRUD operations",
+        "Advanced filtering by instrument, timeframe, date range",
+        "Pagination and sorting for large result sets",
+        "Event aggregation and statistics endpoints",
+        "OpenAPI documentation with interactive testing",
+        "Rate limiting and authentication middleware"
+      ],
+      "dependencies": ["batch-processing-engine", "spike-detection-system"],
+      "estimate": "M",
+      "risk": "Low",
+      "files_touched": [
+        "apps/api/app/routers/events.py",
+        "apps/api/app/routers/statistics.py",
+        "apps/api/app/schemas/event_schemas.py",
+        "apps/api/app/services/event_service.py",
+        "apps/api/tests/test_event_api.py"
+      ],
+      "db_migrations": false,
+      "flags": ["api_v1_enabled"]
+    },
+    {
+      "id": "system-monitoring-dashboard",
+      "title": "System Monitoring and Health Dashboard",
+      "summary": "Build comprehensive monitoring dashboard for system health, performance metrics, and operational insights",
+      "acceptance_criteria": [
+        "Real-time system health monitoring dashboard",
+        "Performance metrics for processing latency and throughput",
+        "Error rate monitoring and alerting",
+        "Data pipeline status and job monitoring",
+        "Resource usage graphs (CPU, memory, database)",
+        "Historical performance trends and analytics"
+      ],
+      "dependencies": ["event-management-api"],
+      "estimate": "M",
+      "risk": "Medium",
+      "files_touched": [
+        "apps/web/app/dashboard/page.tsx",
+        "apps/web/components/monitoring/HealthWidget.tsx",
+        "apps/web/components/monitoring/MetricsChart.tsx",
+        "apps/web/lib/api/monitoring.ts",
+        "apps/api/app/routers/monitoring.py"
+      ],
+      "db_migrations": false,
+      "flags": ["monitoring_dashboard_enabled"]
+    },
+    {
+      "id": "event-visualization-interface",
+      "title": "Event Visualization and Analysis Interface",
+      "summary": "Create user-friendly interface for visualizing resistance events and performing analysis",
+      "acceptance_criteria": [
+        "Interactive charts showing events overlaid on candlestick data",
+        "Filter interface for instruments, timeframes, and date ranges",
+        "Event list with sortable columns and detailed views",
+        "Export functionality for events data (CSV, JSON)",
+        "Responsive design for desktop and mobile devices",
+        "Real-time updates for new events in spike mode"
+      ],
+      "dependencies": ["event-management-api"],
+      "estimate": "L",
+      "risk": "Medium",
+      "files_touched": [
+        "apps/web/app/events/page.tsx",
+        "apps/web/components/charts/CandlestickChart.tsx",
+        "apps/web/components/events/EventFilters.tsx",
+        "apps/web/components/events/EventTable.tsx",
+        "apps/web/lib/api/events.ts",
+        "apps/web/hooks/useEventStream.ts"
+      ],
+      "db_migrations": false,
+      "flags": ["event_visualization_enabled", "real_time_ui"]
+    },
+    {
+      "id": "configuration-management",
+      "title": "Configuration Management System",
+      "summary": "Build system for managing instruments, timeframes, and algorithm parameters",
+      "acceptance_criteria": [
+        "Admin interface for managing supported instruments",
+        "Configuration for timeframe priorities and processing rules",
+        "Algorithm parameter tuning interface",
+        "Feature flag management for system components",
+        "Configuration versioning and rollback capability",
+        "Environment-specific configuration management"
+      ],
+      "dependencies": ["system-monitoring-dashboard"],
+      "estimate": "M",
+      "risk": "Low",
+      "files_touched": [
+        "apps/web/app/admin/page.tsx",
+        "apps/web/components/admin/ConfigurationPanel.tsx",
+        "apps/api/app/routers/admin.py",
+        "apps/api/app/models/configuration.py",
+        "apps/api/app/services/config_service.py"
+      ],
+      "db_migrations": true,
+      "flags": ["admin_interface_enabled", "dynamic_config"]
+    },
+    {
+      "id": "performance-optimization-scaling",
+      "title": "Performance Optimization and Scaling",
+      "summary": "Optimize system performance and implement horizontal scaling capabilities",
+      "acceptance_criteria": [
+        "Database query optimization with proper indexing",
+        "Caching layer for frequently accessed data",
+        "Load balancing for API endpoints",
+        "Auto-scaling configuration for high-traffic periods",
+        "Performance benchmarks meet SLA requirements",
+        "Stress testing validates system under load"
+      ],
+      "dependencies": ["configuration-management", "event-visualization-interface"],
+      "estimate": "L",
+      "risk": "High",
+      "files_touched": [
+        "apps/api/app/core/cache.py",
+        "apps/api/app/core/performance.py",
+        "docker-compose.yml",
+        "apps/api/app/middleware/caching.py",
+        "apps/api/tests/test_performance.py"
+      ],
+      "db_migrations": true,
+      "flags": ["caching_enabled", "auto_scaling", "performance_monitoring"]
+    }
+  ]
+}
