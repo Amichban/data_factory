@@ -268,23 +268,46 @@ Currently, status is managed through:
 - **Issue State**: Open/Closed
 - **Meta Issue**: Tracks overall progress with checkboxes
 
-### Recommended Improvements
+### Project Board and Status Management
 
-1. **Automated Project Board Integration**
-   - Use GitHub Projects (v2) API for better automation
-   - Create columns: Backlog, Todo, In Progress, Review, Done
-   - Move issues based on label changes or PR links
+We've implemented comprehensive automation for status tracking:
 
-2. **Status Update Workflows**
-   - Listen for issue label changes
-   - Update project board cards automatically
-   - Update meta issue checkboxes when slices complete
+#### **Implemented: Status Label System**
+The `project-board-automation.yml` workflow provides:
+- **Automatic status labels** on all new issues
+- **Comment commands** for status updates:
+  - `/status:todo` - Move to Todo
+  - `/status:in-progress` - Start work
+  - `/status:review` - Ready for review
+  - `/status:blocked` - Blocked by dependency
+  - `/status:done` - Complete
+- **Meta issue checkbox updates** when slices complete
+- **Automatic label cleanup** (removes conflicting status labels)
 
-3. **Developer Assignment**
-   - Auto-assign based on expertise areas
-   - Balance workload across team members
+#### **Note: GitHub Projects v2 Required**
+GitHub Classic Projects are deprecated. For full board automation:
+1. Manually create a GitHub Project (v2) from the Projects tab
+2. Add custom fields for points, risk, etc.
+3. Use GitHub's built-in automation rules for status changes
+4. The workflows will still update labels for tracking
 
-4. **Progress Tracking**
-   - Burndown charts in meta issue
-   - Weekly progress comments
-   - Slack/Discord notifications
+### Who Maintains Status?
+
+Status is maintained through multiple touchpoints:
+
+1. **Developers** - Use comment commands (`/status:in-progress`) when starting work
+2. **GitHub Actions** - Automatically update on:
+   - Issue creation → `status:backlog`
+   - Issue closed → `status:done`
+   - PR linked → Can trigger `status:review`
+3. **Project Manager** - Can manually update via labels or comments
+4. **Meta Issue** - Automatically tracks completion of vertical slices
+
+### Recommended Template Improvements
+
+1. **Fix JSON Contract Mismatch** - Align `/scope` output with workflow expectations
+2. **Include Issue Comment Trigger** - Add by default for `/accept-scope`
+3. **Track `.claude/out/`** - Remove from default `.gitignore`
+4. **Add Status Labels** - Pre-create status labels on repo initialization
+5. **Projects v2 Integration** - Update to use new Projects API (GraphQL)
+6. **Documentation** - Add clear setup instructions for the PM workflow
