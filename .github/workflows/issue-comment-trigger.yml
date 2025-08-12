@@ -1,0 +1,72 @@
+name: Issue Comment Trigger
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  handle-accept-scope:
+    if: github.event.issue.number && contains(github.event.comment.body, '/accept-scope')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      actions: write
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check for scope.json
+        id: check-scope
+        run: |
+          if [ -f ".claude/out/scope.json" ]; then
+            echo "scope_exists=true" >> $GITHUB_OUTPUT
+            # Read and compact the JSON
+            SCOPE_JSON=$(cat .claude/out/scope.json | jq -c .)
+            # Escape for GitHub Actions
+            SCOPE_JSON="${SCOPE_JSON//'%'/'%25'}"
+            SCOPE_JSON="${SCOPE_JSON//$'\n'/'%0A'}"
+            SCOPE_JSON="${SCOPE_JSON//$'\r'/'%0D'}"
+            echo "scope_json=$SCOPE_JSON" >> $GITHUB_OUTPUT
+          else
+            echo "scope_exists=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Trigger scope-to-issues workflow
+        if: steps.check-scope.outputs.scope_exists == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'scope-to-issues.yml',
+              ref: 'main',
+              inputs: {
+                scope_json: `${{ steps.check-scope.outputs.scope_json }}`
+              }
+            });
+            
+      - name: Comment success on issue
+        if: steps.check-scope.outputs.scope_exists == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '🤖 Workflow triggered! Creating issues from scope. Check the [Actions tab](https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions) for progress.'
+            });
+      
+      - name: Comment error on issue
+        if: steps.check-scope.outputs.scope_exists == 'false'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '❌ Error: No scope.json found in `.claude/out/`. Please run `/scope` command first to generate the scope.'
+            });
