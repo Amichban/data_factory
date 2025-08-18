@@ -1,0 +1,100 @@
+{
+  "intent_issue": 18,
+  "project_name": "Event Detection System",
+  "slices": [
+    {
+      "id": "VS-001",
+      "title": "Data Foundation",
+      "summary": "Core data pipeline from Firestore to event detection",
+      "stories": ["US-001", "US-002", "US-003", "US-004"],
+      "acceptance_criteria": [
+        "Connect to Firestore and fetch all 29 instruments",
+        "Database schema supports all event properties",
+        "ATR calculation matches expected values",
+        "Event detection achieves 95% accuracy"
+      ],
+      "estimate": "Week 1-2",
+      "risk": "Medium",
+      "dependencies": [],
+      "priority": "P0"
+    },
+    {
+      "id": "VS-002",
+      "title": "Feature Engineering",
+      "summary": "Calculate all derived features from events",
+      "stories": ["US-011", "US-012", "US-013", "US-014", "US-017", "US-018", "US-016"],
+      "acceptance_criteria": [
+        "All feature types calculating correctly",
+        "Feature pipeline processes new events automatically",
+        "Performance < 100ms per event",
+        "All features stored and queryable"
+      ],
+      "estimate": "Week 3",
+      "risk": "Low",
+      "dependencies": ["VS-001"],
+      "priority": "P1"
+    },
+    {
+      "id": "VS-003",
+      "title": "User Interface",
+      "summary": "Web dashboards for events, features, and operations",
+      "stories": ["US-005", "US-019", "US-020"],
+      "acceptance_criteria": [
+        "All dashboards load in < 2 seconds",
+        "Real-time updates working",
+        "Mobile responsive",
+        "Export functionality tested"
+      ],
+      "estimate": "Week 4",
+      "risk": "Low",
+      "dependencies": ["VS-001", "VS-002"],
+      "priority": "P1"
+    },
+    {
+      "id": "VS-004",
+      "title": "Processing Pipeline",
+      "summary": "Batch and real-time processing systems",
+      "stories": ["US-006", "US-007", "US-021"],
+      "acceptance_criteria": [
+        "Batch: Process 140k candles in < 10 minutes",
+        "Spike: Process updates in < 1 second",
+        "Schedulers running reliably",
+        "Checkpoint/resume working"
+      ],
+      "estimate": "Week 2-3",
+      "risk": "High",
+      "dependencies": ["VS-001"],
+      "priority": "P0"
+    },
+    {
+      "id": "VS-005",
+      "title": "Operations & Quality",
+      "summary": "Production readiness and monitoring",
+      "stories": ["US-008", "US-009", "US-010", "US-022", "US-023"],
+      "acceptance_criteria": [
+        "Data quality validation automated",
+        "Performance monitoring active",
+        "Retention policies configured",
+        "All instruments validated"
+      ],
+      "estimate": "Week 5-6",
+      "risk": "Low",
+      "dependencies": ["VS-001", "VS-004"],
+      "priority": "P1"
+    },
+    {
+      "id": "VS-006",
+      "title": "Advanced Features",
+      "summary": "Enhanced analysis and documentation",
+      "stories": ["US-015", "US-024"],
+      "acceptance_criteria": [
+        "Advanced sequence analysis working",
+        "Documentation complete"
+      ],
+      "estimate": "Week 6",
+      "risk": "Low",
+      "dependencies": ["VS-002"],
+      "priority": "P2"
+    }
+  ]
+}
