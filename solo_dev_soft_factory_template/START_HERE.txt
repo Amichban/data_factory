@@ -1,0 +1,44 @@
+===============================================
+    SOLO SOFTWARE FACTORY - START HERE
+===============================================
+
+⚠️  STEP 1: DISCONNECT FROM TEMPLATE REPO! ⚠️
+
+Run this IMMEDIATELY after cloning:
+
+    ./setup-new-project.sh
+
+This prevents accidentally committing to the
+template repository and sets up YOUR project.
+
+-----------------------------------------------
+
+📖 STEP 2: READ THE GUIDE
+
+You only need ONE file to use this template:
+
+    → HOW_TO_USE.md
+
+That's it. Everything you need is in that file.
+
+-----------------------------------------------
+
+🔍 VERIFY YOUR SETUP
+
+Check you're not connected to template:
+
+    ./check-repo-status.sh
+
+-----------------------------------------------
+
+Other files in this repo:
+- README.md: Just a summary (you don't need it)
+- CLAUDE.md: For AI agents only (not for you)
+- docs/: Technical details (only if curious)
+- .claude/: AI memory (automatically managed)
+
+===============================================
+        SERIOUSLY, JUST 2 STEPS:
+    1. Run setup-new-project.sh
+    2. Read HOW_TO_USE.md
+===============================================

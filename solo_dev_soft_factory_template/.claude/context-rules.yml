@@ -1,0 +1,117 @@
+rules:
+  - name: "Feature Development"
+    agents: ["backend", "frontend"]
+    include:
+      - "apps/api/src/**/*.py"
+      - "apps/web/src/**/*.tsx"
+      - "apps/web/src/**/*.ts"
+      - ".claude/PROJECT_STATE.md"
+      - ".claude/DECISIONS.md"
+    exclude:
+      - "**/__pycache__/**"
+      - "**/*.log"
+      - "**/node_modules/**"
+      - "**/.next/**"
+      - "apps/api/alembic/versions/**"
+
+  - name: "Architecture Planning"
+    agents: ["architect"]
+    include:
+      - ".claude/DECISIONS.md" 
+      - ".claude/PROJECT_STATE.md"
+      - "docker-compose.yml"
+      - "apps/*/Dockerfile"
+      - "docs/architecture/**"
+      - "docs/adr/**"
+      - "**/requirements.txt"
+      - "**/package.json"
+    exclude:
+      - "apps/*/src/**"
+      - "**/node_modules/**"
+
+  - name: "Project Management"
+    agents: ["pm"]
+    include:
+      - ".claude/PROJECT_STATE.md"
+      - ".claude/DECISIONS.md" 
+      - ".claude/out/repo-context.json"
+      - ".claude/out/scope.json"
+      - ".claude/out/scope.summary.md"
+      - "readme.md"
+    exclude:
+      - "apps/**"
+      - "**/node_modules/**"
+
+  - name: "Database Operations"
+    agents: ["dba"]
+    include:
+      - "apps/api/src/database.py"
+      - "apps/api/src/models/**/*.py"
+      - "apps/api/alembic/**"
+      - ".claude/PROJECT_STATE.md"
+      - ".claude/DECISIONS.md"
+    exclude:
+      - "**/__pycache__/**"
+      - "apps/api/alembic/versions/**" # Exclude generated migration files
+
+  - name: "Security Review"
+    agents: ["security"]
+    include:
+      - "apps/api/src/**/*.py"
+      - "apps/web/src/**/*.tsx"
+      - "apps/web/src/**/*.ts"
+      - ".pre-commit-config.yaml"
+      - ".secrets.baseline"
+      - "docker-compose.yml"
+      - "apps/*/Dockerfile"
+      - ".claude/DECISIONS.md"
+    exclude:
+      - "**/__pycache__/**"
+      - "**/node_modules/**"
+      - "**/*.log"
+
+  - name: "Frontend Development"
+    agents: ["frontend"]
+    include:
+      - "apps/web/src/**/*.tsx"
+      - "apps/web/src/**/*.ts"
+      - "apps/web/src/**/*.css"
+      - "apps/web/package.json"
+      - "apps/web/tailwind.config.js"
+      - "apps/web/next.config.js"
+      - ".claude/PROJECT_STATE.md"
+    exclude:
+      - "**/node_modules/**"
+      - "**/.next/**"
+      - "**/*.log"
+
+  - name: "Backend Development"  
+    agents: ["backend"]
+    include:
+      - "apps/api/src/**/*.py"
+      - "apps/api/requirements*.txt"
+      - "apps/api/alembic.ini"
+      - ".claude/PROJECT_STATE.md"
+      - ".claude/DECISIONS.md"
+    exclude:
+      - "**/__pycache__/**"
+      - "**/*.log"
+
+limits:
+  max_files: 25
+  max_file_size: 75000  
+  total_context: 300000
+
+# Context enhancement rules
+enhancements:
+  - name: "Always include project state"
+    condition: "any_agent"
+    files: [".claude/PROJECT_STATE.md"]
+    
+  - name: "Include decisions for architectural changes"
+    condition: "agents: [architect, dba]"
+    files: [".claude/DECISIONS.md"]
+    
+  - name: "Include API schema for frontend work"
+    condition: "agents: [frontend]" 
+    files: ["apps/api/src/main.py", "apps/api/src/models/__init__.py"]

@@ -1,0 +1,381 @@
+name: Setup GitHub Project
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_name:
+        description: 'Name for the project board'
+        required: false
+        default: 'Development Board'
+        type: string
+
+jobs:
+  setup-project:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      projects: write
+      actions: write
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        run: |
+          npm install @octokit/graphql
+      
+      - name: Create and Configure Project
+        id: create-project
+        uses: actions/github-script@v6
+        env:
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        with:
+          script: |
+            if (!process.env.PROJECT_TOKEN) {
+              core.setFailed('PROJECT_TOKEN secret is required to create projects');
+              return;
+            }
+            
+            const { graphql } = require('@octokit/graphql');
+            const graphqlWithAuth = graphql.defaults({
+              headers: {
+                authorization: `token ${process.env.PROJECT_TOKEN}`,
+              },
+            });
+            
+            const projectName = '${{ inputs.project_name }}' || 'Development Board';
+            
+            try {
+              // Get repository ID and owner ID
+              const repoQuery = `
+                query GetRepoAndOwner($owner: String!, $repo: String!) {
+                  repository(owner: $owner, name: $repo) {
+                    id
+                    owner {
+                      id
+                      ... on User {
+                        login
+                      }
+                      ... on Organization {
+                        login
+                      }
+                    }
+                  }
+                }
+              `;
+              
+              const repoResult = await graphqlWithAuth(repoQuery, {
+                owner: context.repo.owner,
+                repo: context.repo.repo
+              });
+              
+              const ownerId = repoResult.repository.owner.id;
+              const repositoryId = repoResult.repository.id;
+              
+              console.log(`Creating project for owner: ${repoResult.repository.owner.login}`);
+              
+              // Check if project already exists
+              const existingProjectQuery = `
+                query GetExistingProject($owner: String!, $repo: String!) {
+                  repository(owner: $owner, name: $repo) {
+                    projectsV2(first: 10) {
+                      nodes {
+                        id
+                        title
+                        number
+                      }
+                    }
+                  }
+                }
+              `;
+              
+              const existingProjects = await graphqlWithAuth(existingProjectQuery, {
+                owner: context.repo.owner,
+                repo: context.repo.repo
+              });
+              
+              let project = existingProjects.repository.projectsV2.nodes.find(
+                p => p.title === projectName
+              );
+              
+              if (project) {
+                console.log(`Project "${projectName}" already exists: #${project.number}`);
+              } else {
+                // Create new project
+                const createMutation = `
+                  mutation CreateProject($ownerId: ID!, $title: String!) {
+                    createProjectV2(input: {
+                      ownerId: $ownerId,
+                      title: $title
+                    }) {
+                      projectV2 {
+                        id
+                        number
+                        url
+                      }
+                    }
+                  }
+                `;
+                
+                const createResult = await graphqlWithAuth(createMutation, {
+                  ownerId: ownerId,
+                  title: projectName
+                });
+                
+                project = createResult.createProjectV2.projectV2;
+                console.log(`Created project: ${project.url}`);
+                
+                // Link project to repository
+                const linkMutation = `
+                  mutation LinkProjectToRepo($projectId: ID!, $repositoryId: ID!) {
+                    linkProjectV2ToRepository(input: {
+                      projectId: $projectId,
+                      repositoryId: $repositoryId
+                    }) {
+                      repository {
+                        id
+                      }
+                    }
+                  }
+                `;
+                
+                try {
+                  await graphqlWithAuth(linkMutation, {
+                    projectId: project.id,
+                    repositoryId: repositoryId
+                  });
+                  console.log('Linked project to repository');
+                } catch (error) {
+                  console.log('Could not link project to repository (may require additional permissions)');
+                }
+              }
+              
+              // Create custom fields
+              console.log('Setting up custom fields...');
+              
+              // Helper function to create single select field
+              async function createSingleSelectField(projectId, name, options) {
+                const mutation = `
+                  mutation CreateField($projectId: ID!, $name: String!, $options: [ProjectV2SingleSelectFieldOptionInput!]!) {
+                    createProjectV2Field(input: {
+                      projectId: $projectId,
+                      dataType: SINGLE_SELECT,
+                      name: $name,
+                      singleSelectOptions: $options
+                    }) {
+                      projectV2Field {
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                        }
+                      }
+                    }
+                  }
+                `;
+                
+                try {
+                  const result = await graphqlWithAuth(mutation, {
+                    projectId: projectId,
+                    name: name,
+                    options: options.map(opt => ({ name: opt, color: 'GRAY', description: '' }))
+                  });
+                  console.log(`Created field: ${name}`);
+                  return result.createProjectV2Field.projectV2Field;
+                } catch (error) {
+                  if (error.message.includes('already exists')) {
+                    console.log(`Field "${name}" already exists`);
+                  } else {
+                    console.error(`Failed to create field ${name}:`, error.message);
+                  }
+                  return null;
+                }
+              }
+              
+              // Helper function to create number field
+              async function createNumberField(projectId, name) {
+                const mutation = `
+                  mutation CreateNumberField($projectId: ID!, $name: String!) {
+                    createProjectV2Field(input: {
+                      projectId: $projectId,
+                      dataType: NUMBER,
+                      name: $name
+                    }) {
+                      projectV2Field {
+                        ... on ProjectV2Field {
+                          id
+                          name
+                        }
+                      }
+                    }
+                  }
+                `;
+                
+                try {
+                  const result = await graphqlWithAuth(mutation, {
+                    projectId: projectId,
+                    name: name
+                  });
+                  console.log(`Created field: ${name}`);
+                  return result.createProjectV2Field.projectV2Field;
+                } catch (error) {
+                  if (error.message.includes('already exists')) {
+                    console.log(`Field "${name}" already exists`);
+                  } else {
+                    console.error(`Failed to create field ${name}:`, error.message);
+                  }
+                  return null;
+                }
+              }
+              
+              // Create Status field
+              await createSingleSelectField(project.id, 'Status', [
+                'Todo',
+                'In Progress',
+                'In Review',
+                'Blocked',
+                'Done'
+              ]);
+              
+              // Create Priority field
+              await createSingleSelectField(project.id, 'Priority', [
+                'High',
+                'Medium',
+                'Low'
+              ]);
+              
+              // Create Risk field
+              await createSingleSelectField(project.id, 'Risk', [
+                'Low',
+                'Medium',
+                'High'
+              ]);
+              
+              // Create Component field
+              await createSingleSelectField(project.id, 'Component', [
+                'Frontend',
+                'Backend',
+                'Database',
+                'Infrastructure',
+                'Documentation'
+              ]);
+              
+              // Create Points field (number)
+              await createNumberField(project.id, 'Points');
+              
+              // Create Sprint field
+              await createSingleSelectField(project.id, 'Sprint', [
+                'Backlog',
+                'Sprint 1',
+                'Sprint 2',
+                'Sprint 3',
+                'Sprint 4'
+              ]);
+              
+              console.log('Project setup complete!');
+              
+              // Set outputs
+              core.setOutput('project_id', project.id);
+              core.setOutput('project_number', project.number);
+              core.setOutput('project_url', project.url || `https://github.com/${context.repo.owner}/${context.repo.repo}/projects/${project.number}`);
+              
+              // Create summary
+              core.summary
+                .addHeading('🎯 Project Setup Complete')
+                .addTable([
+                  [{data: 'Property', header: true}, {data: 'Value', header: true}],
+                  ['Project Name', projectName],
+                  ['Project Number', `#${project.number}`],
+                  ['Project URL', `[View Project](${project.url || '#'})`],
+                  ['Fields Created', 'Status, Priority, Risk, Component, Points, Sprint']
+                ])
+                .addRaw('\n\n')
+                .addHeading('Next Steps', 3)
+                .addList([
+                  'Add PROJECT_TOKEN to repository secrets for full automation',
+                  'Run /scope on an intent issue to create slices',
+                  'Use /accept-scope to create issues and add them to the board',
+                  'Use /status: commands to update issue status'
+                ])
+                .write();
+              
+            } catch (error) {
+              core.setFailed(`Failed to create project: ${error.message}`);
+              console.error('Full error:', error);
+            }
+      
+      - name: Store project info
+        if: success()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            // Store project number as repository variable for other workflows
+            try {
+              await github.rest.actions.createOrUpdateRepoVariable({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'PROJECT_NUMBER',
+                value: '${{ steps.create-project.outputs.project_number }}'
+              });
+              console.log('Stored PROJECT_NUMBER as repository variable');
+            } catch (error) {
+              console.log('Could not store PROJECT_NUMBER (requires admin access)');
+              console.log('Please manually add PROJECT_NUMBER=${{ steps.create-project.outputs.project_number }} to repository variables');
+            }
+      
+      - name: Create setup issue
+        if: success()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const issueBody = `## 🎉 GitHub Project Created Successfully!
+            
+**Project:** [#${{ steps.create-project.outputs.project_number }}](${{ steps.create-project.outputs.project_url }})
+
+### ✅ Setup Complete
+- Project board created with custom fields
+- Status workflow configured
+- Automation ready
+
+### 🔧 Required Configuration
+
+To enable full automation, create a Personal Access Token:
+
+1. Go to [GitHub Settings > Developer Settings > Personal Access Tokens](https://github.com/settings/tokens/new)
+2. Create a token with these scopes:
+   - \`repo\` (full control)
+   - \`project\` (full control)
+3. Add as repository secret: \`PROJECT_TOKEN\`
+
+### 📚 How to Use
+
+1. **Create an intent issue** describing what you want to build
+2. **Run** \`/scope #<issue-number>\` to generate implementation slices
+3. **Run** \`/accept-scope\` to create issues and add to board
+4. **Use status commands** on issues:
+   - \`/status:in-progress\` - Start work
+   - \`/status:review\` - Ready for review
+   - \`/status:blocked\` - Blocked
+   - \`/status:done\` - Complete
+
+### 🤖 Automation Features
+
+- Issues automatically added to project when created
+- Status syncs between labels and project board
+- Meta issues track overall progress
+- Vertical slices include agent recommendations
+
+---
+_This issue can be closed once configuration is complete._`;
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🚀 Project Board Setup Complete',
+              body: issueBody,
+              labels: ['documentation', 'setup']
+            });

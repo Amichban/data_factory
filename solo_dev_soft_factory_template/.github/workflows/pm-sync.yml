@@ -1,0 +1,176 @@
+name: PM Sync
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Every Monday at 9 AM
+  workflow_dispatch:
+  issues:
+    types: [opened, closed, reopened]
+  pull_request:
+    types: [opened, closed, merged]
+
+jobs:
+  update-project-state:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Gather project metrics
+        uses: actions/github-script@v6
+        id: metrics
+        with:
+          script: |
+            // Get all issues
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'all',
+              labels: 'vertical-slice'
+            });
+            
+            // Calculate metrics
+            const metrics = {
+              total_issues: issues.length,
+              open_issues: issues.filter(i => i.state === 'open').length,
+              closed_issues: issues.filter(i => i.state === 'closed').length,
+              in_progress: issues.filter(i => i.labels.some(l => l.name === 'in-progress')).length,
+              blocked: issues.filter(i => i.labels.some(l => l.name === 'blocked')).length,
+              total_points: 0,
+              completed_points: 0,
+              velocity: 0
+            };
+            
+            // Calculate story points
+            for (const issue of issues) {
+              const pointLabel = issue.labels.find(l => l.name.startsWith('points:'));
+              if (pointLabel) {
+                const points = parseInt(pointLabel.name.split(':')[1]);
+                metrics.total_points += points;
+                if (issue.state === 'closed') {
+                  metrics.completed_points += points;
+                }
+              }
+            }
+            
+            // Calculate velocity (last 2 weeks)
+            const twoWeeksAgo = new Date();
+            twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
+            const recentClosed = issues.filter(i => 
+              i.state === 'closed' && 
+              new Date(i.closed_at) > twoWeeksAgo
+            );
+            
+            for (const issue of recentClosed) {
+              const pointLabel = issue.labels.find(l => l.name.startsWith('points:'));
+              if (pointLabel) {
+                metrics.velocity += parseInt(pointLabel.name.split(':')[1]);
+              }
+            }
+            
+            core.setOutput('metrics', JSON.stringify(metrics));
+            return metrics;
+      
+      - name: Update PROJECT_STATE.md
+        run: |
+          METRICS='${{ steps.metrics.outputs.metrics }}'
+          DATE=$(date +"%Y-%m-%d")
+          
+          cat > .claude/PROJECT_STATE.md << 'EOF'
+          # Project State
+          
+          Last Updated: ${DATE}
+          
+          ## Current Sprint
+          
+          ### Metrics
+          - Open Issues: $(echo $METRICS | jq -r '.open_issues')
+          - In Progress: $(echo $METRICS | jq -r '.in_progress')
+          - Blocked: $(echo $METRICS | jq -r '.blocked')
+          - Completed: $(echo $METRICS | jq -r '.closed_issues')
+          
+          ### Story Points
+          - Total Points: $(echo $METRICS | jq -r '.total_points')
+          - Completed Points: $(echo $METRICS | jq -r '.completed_points')
+          - 2-Week Velocity: $(echo $METRICS | jq -r '.velocity')
+          
+          ### Progress
+          $(echo $METRICS | jq -r '
+            "[" + 
+            ("=" * ((.completed_points / .total_points * 20) | floor)) + 
+            (">" * 1) + 
+            (" " * (20 - ((.completed_points / .total_points * 20) | floor) - 1)) + 
+            "] " + 
+            ((.completed_points / .total_points * 100) | floor | tostring) + "%"
+          ')
+          
+          ## Active Work
+          
+          Check GitHub Issues for current work items.
+          
+          ## Blockers
+          
+          Check issues labeled 'blocked' for current blockers.
+          EOF
+      
+      - name: Generate weekly summary
+        if: github.event.schedule == '0 9 * * 1'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const metrics = JSON.parse('${{ steps.metrics.outputs.metrics }}');
+            
+            // Get last week's completed issues
+            const oneWeekAgo = new Date();
+            oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+            
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'closed',
+              since: oneWeekAgo.toISOString()
+            });
+            
+            const completedSlices = issues.filter(i => 
+              i.labels.some(l => l.name === 'vertical-slice')
+            );
+            
+            // Create weekly summary issue
+            const summaryBody = `
+            # Weekly Summary - Week of ${new Date().toISOString().split('T')[0]}
+            
+            ## Completed This Week
+            ${completedSlices.length > 0 ? 
+              completedSlices.map(i => `- ✅ #${i.number} - ${i.title}`).join('\n') : 
+              '- No vertical slices completed this week'
+            }
+            
+            ## Current Metrics
+            - **Velocity**: ${metrics.velocity} points (2-week average)
+            - **Open Issues**: ${metrics.open_issues}
+            - **In Progress**: ${metrics.in_progress}
+            - **Blocked**: ${metrics.blocked}
+            
+            ## Progress
+            - **Total Points**: ${metrics.total_points}
+            - **Completed**: ${metrics.completed_points} (${Math.round(metrics.completed_points / metrics.total_points * 100)}%)
+            
+            ## Next Week Focus
+            _To be determined based on priority and capacity_
+            `;
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Weekly Summary - ${new Date().toISOString().split('T')[0]}`,
+              body: summaryBody,
+              labels: ['weekly-summary', 'pm']
+            });
+      
+      - name: Commit updates
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add .claude/PROJECT_STATE.md
+          git diff --staged --quiet || git commit -m "Update project state [skip ci]"
+          git push

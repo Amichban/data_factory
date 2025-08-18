@@ -1,0 +1,302 @@
+name: Scope to Issues
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope_json:
+        description: 'JSON scope from Claude Code /scope command'
+        required: true
+        type: string
+      source_issue_number:
+        description: 'Source issue number'
+        required: false
+        type: string
+  repository_dispatch:
+    types: [accept-scope]
+
+jobs:
+  create-issues:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      projects: write
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        run: |
+          npm install @octokit/graphql
+      
+      - name: Parse scope and create issues
+        id: create-issues
+        uses: actions/github-script@v6
+        env:
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+        with:
+          script: |
+            const fs = require('fs');
+            const ProjectV2Manager = require('./.github/scripts/project-graphql.js');
+            
+            // Parse scope JSON
+            const scopeJson = `${{ inputs.scope_json }}`;
+            const scope = JSON.parse(scopeJson);
+            const sourceIssueNumber = '${{ inputs.source_issue_number }}' || scope.source_issue;
+            
+            console.log(`Creating issues for ${scope.slices.length} slices`);
+            
+            // Convert estimate to points
+            const estimateToPoints = {
+              'S': 3,
+              'M': 5,
+              'L': 8,
+              'XL': 13
+            };
+            
+            const issues = [];
+            let totalPoints = 0;
+            
+            // Create issues for each slice
+            for (const slice of scope.slices) {
+              const points = estimateToPoints[slice.estimate] || 5;
+              totalPoints += points;
+              
+              // Build agent sequence section if provided
+              let agentSection = '';
+              if (slice.agent_sequence && slice.agent_sequence.length > 0) {
+                agentSection = '\n\n### 🤖 Development Sequence\n\n';
+                agentSection += 'Follow this recommended agent sequence:\n\n';
+                slice.agent_sequence.forEach((step, index) => {
+                  agentSection += `${index + 1}. **\`/${step.agent}\`** - ${step.task}\n`;
+                  agentSection += `   _${step.reason}_\n\n`;
+                });
+                agentSection += '\n💡 _You can adjust this sequence based on your needs_\n';
+              }
+              
+              // Build technical details section
+              let technicalSection = '\n\n### 📋 Technical Details\n\n';
+              if (slice.files_touched && slice.files_touched.length > 0) {
+                technicalSection += '**Files to modify:**\n';
+                slice.files_touched.forEach(file => {
+                  technicalSection += `- \`${file}\`\n`;
+                });
+                technicalSection += '\n';
+              }
+              if (slice.db_migrations) {
+                technicalSection += '**Database:** ⚠️ Requires migration\n\n';
+              }
+              if (slice.flags && slice.flags.length > 0) {
+                technicalSection += '**Feature flags:**\n';
+                slice.flags.forEach(flag => {
+                  technicalSection += `- \`${flag}\`\n`;
+                });
+              }
+              
+              // Add parallelization info if available
+              let parallelSection = '';
+              if (scope.parallelization) {
+                const track = scope.parallelization.tracks.find(t => 
+                  t.slices.includes(slice.id)
+                );
+                if (track) {
+                  parallelSection = '\n\n### 🔄 Parallelization\n\n';
+                  parallelSection += `**Track:** ${track.name}\n`;
+                  parallelSection += `**Can start:** ${track.can_start}\n`;
+                  parallelSection += `**Branch:** \`${track.branch_prefix}/${slice.id}\`\n`;
+                  
+                  // Check if this can be done in parallel with others
+                  const parallelWith = scope.parallelization.recommended_order?.parallel_after?.[slice.id];
+                  if (parallelWith && parallelWith.length > 0) {
+                    parallelSection += `\n**Can parallelize after this:**\n`;
+                    parallelWith.forEach(p => {
+                      parallelSection += `- ${p}\n`;
+                    });
+                  }
+                }
+              
+              }
+              
+              // Create issue body
+              const issueBody = `## 🎯 Vertical Slice: ${slice.title}
+
+${slice.summary}
+
+### ✅ Acceptance Criteria
+${slice.acceptance_criteria.map(ac => `- [ ] ${ac}`).join('\n')}
+${agentSection}${technicalSection}${parallelSection}
+
+### 📊 Metadata
+- **Estimate:** ${slice.estimate} (${points} points)
+- **Risk:** ${slice.risk || 'Medium'}
+- **Dependencies:** ${slice.dependencies && slice.dependencies.length > 0 ? slice.dependencies.join(', ') : 'None'}
+
+---
+_Generated from intent: #${sourceIssueNumber}_`;
+
+              // Create the issue
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: slice.title,
+                body: issueBody,
+                labels: [
+                  'vertical-slice',
+                  `points:${points}`,
+                  `risk:${(slice.risk || 'medium').toLowerCase()}`,
+                  'status:todo'
+                ]
+              });
+              
+              issues.push(issue.data);
+              console.log(`Created issue #${issue.data.number}: ${slice.title}`);
+            }
+            
+            // Create meta tracking issue
+            const targetDate = new Date();
+            targetDate.setDate(targetDate.getDate() + Math.ceil(totalPoints / 5) * 7); // Rough estimate
+            
+            const metaBody = `## 📚 Scope Implementation Tracking
+
+**Source Intent:** #${sourceIssueNumber}
+**Total Points:** ${totalPoints}
+**Estimated Duration:** ${Math.ceil(totalPoints / 5)} weeks
+
+### 🔄 Vertical Slices
+${issues.map(i => `- [ ] #${i.number} - ${i.title}`).join('\n')}
+
+### 📅 Timeline
+- **Start:** ${new Date().toISOString().split('T')[0]}
+- **Target:** ${targetDate.toISOString().split('T')[0]}
+
+### 📈 Progress
+- [ ] All slices created
+- [ ] Development started
+- [ ] 50% complete
+- [ ] All slices complete
+- [ ] Testing complete
+- [ ] Deployed
+
+---
+_This meta issue tracks the implementation of all vertical slices for this scope._`;
+            
+            const metaIssue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[META] Implementation: ${scope.slices[0].title.split(':')[0]}`,
+              body: metaBody,
+              labels: ['meta', 'scope-tracking', 'status:todo']
+            });
+            
+            console.log(`Created meta issue #${metaIssue.data.number}`);
+            
+            // Try to add to GitHub Project v2 if PROJECT_TOKEN is available
+            if (process.env.PROJECT_TOKEN) {
+              try {
+                const manager = new ProjectV2Manager(process.env.PROJECT_TOKEN);
+                const project = await manager.getProject(context.repo.owner, context.repo.repo);
+                
+                console.log(`Found project: ${project.title}`);
+                
+                // Find Status field
+                const statusField = project.fieldsByName['Status'];
+                let todoOptionId = null;
+                
+                if (statusField && statusField.options) {
+                  const todoOption = statusField.options.find(o => o.name === 'Todo');
+                  todoOptionId = todoOption ? todoOption.id : null;
+                }
+                
+                // Add all issues to project
+                for (const issue of [...issues, metaIssue.data]) {
+                  try {
+                    const item = await manager.addIssueToProject(project.id, issue.node_id);
+                    console.log(`Added issue #${issue.number} to project`);
+                    
+                    // Set status to Todo if field exists
+                    if (statusField && todoOptionId) {
+                      await manager.updateSingleSelectField(project.id, item.id, statusField.id, todoOptionId);
+                      console.log(`Set status to Todo for issue #${issue.number}`);
+                    }
+                    
+                    // Set Points field if it exists
+                    const pointsField = project.fieldsByName['Points'];
+                    if (pointsField && issue.labels.some(l => l.name.startsWith('points:'))) {
+                      const points = parseInt(issue.labels.find(l => l.name.startsWith('points:')).name.split(':')[1]);
+                      await manager.updateNumberField(project.id, item.id, pointsField.id, points);
+                    }
+                    
+                    // Set Risk field if it exists
+                    const riskField = project.fieldsByName['Risk'];
+                    if (riskField && riskField.options && issue.labels.some(l => l.name.startsWith('risk:'))) {
+                      const riskLevel = issue.labels.find(l => l.name.startsWith('risk:')).name.split(':')[1];
+                      const riskOption = riskField.options.find(o => o.name.toLowerCase() === riskLevel);
+                      if (riskOption) {
+                        await manager.updateSingleSelectField(project.id, item.id, riskField.id, riskOption.id);
+                      }
+                    }
+                  } catch (error) {
+                    console.error(`Failed to add issue #${issue.number} to project:`, error.message);
+                  }
+                }
+              } catch (error) {
+                console.error('Project v2 integration failed:', error.message);
+                console.log('Issues created but not added to project board. You may need to:');
+                console.log('1. Create a PROJECT_TOKEN secret with project scope');
+                console.log('2. Create a project manually');
+                console.log('3. Add issues to the project manually');
+              }
+            } else {
+              console.log('No PROJECT_TOKEN found, skipping project board integration');
+            }
+            
+            // Comment on original intent issue
+            if (sourceIssueNumber) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: parseInt(sourceIssueNumber),
+                body: `✅ **Scope Accepted and Issues Created!**
+
+Created ${issues.length} vertical slice issues:
+${issues.map(i => `- #${i.number} - ${i.title}`).join('\n')}
+
+📊 **Tracking:** #${metaIssue.data.number}
+📈 **Total Points:** ${totalPoints}
+📅 **Estimated Duration:** ${Math.ceil(totalPoints / 5)} weeks
+
+Start with the first slice or work on multiple slices in parallel based on dependencies.`
+              });
+              
+              // Close the intent issue
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: parseInt(sourceIssueNumber),
+                state: 'closed',
+                state_reason: 'completed'
+              });
+            }
+            
+            // Set outputs for summary
+            core.setOutput('issues_created', issues.length);
+            core.setOutput('total_points', totalPoints);
+            core.setOutput('meta_issue_number', metaIssue.data.number);
+      
+      - name: Generate summary
+        run: |
+          echo "## 🎉 Scope Creation Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Issues Created:** ${{ steps.create-issues.outputs.issues_created }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Points:** ${{ steps.create-issues.outputs.total_points }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Meta Issue:** #${{ steps.create-issues.outputs.meta_issue_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Review the created issues" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check the project board (if configured)" >> $GITHUB_STEP_SUMMARY
+          echo "3. Start working on slices in dependency order" >> $GITHUB_STEP_SUMMARY

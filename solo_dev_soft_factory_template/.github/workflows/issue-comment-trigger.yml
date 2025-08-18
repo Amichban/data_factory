@@ -1,0 +1,214 @@
+name: Issue Comment Trigger
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  handle-accept-scope:
+    if: |
+      github.event.issue.number && 
+      contains(github.event.comment.body, '/accept-scope') &&
+      github.event.comment.author_association != 'NONE'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      actions: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Check for scope.json
+        id: check-scope
+        run: |
+          if [ -f ".claude/out/scope.json" ]; then
+            echo "scope_exists=true" >> $GITHUB_OUTPUT
+            # Read and compact JSON for passing to workflow
+            SCOPE_JSON=$(cat .claude/out/scope.json | jq -c .)
+            # Base64 encode to handle special characters
+            ENCODED_SCOPE=$(echo "$SCOPE_JSON" | base64 -w 0)
+            echo "scope_json_encoded=$ENCODED_SCOPE" >> $GITHUB_OUTPUT
+            
+            # Extract slice count for feedback
+            SLICE_COUNT=$(echo "$SCOPE_JSON" | jq '.slices | length')
+            echo "slice_count=$SLICE_COUNT" >> $GITHUB_OUTPUT
+          else
+            echo "scope_exists=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: React with eyes emoji
+        if: steps.check-scope.outputs.scope_exists == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes'
+            });
+      
+      - name: Trigger scope-to-issues workflow
+        if: steps.check-scope.outputs.scope_exists == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const encodedScope = '${{ steps.check-scope.outputs.scope_json_encoded }}';
+            const scopeJson = Buffer.from(encodedScope, 'base64').toString('utf-8');
+            
+            try {
+              const result = await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'scope-to-issues.yml',
+                ref: 'main',
+                inputs: {
+                  scope_json: scopeJson,
+                  source_issue_number: context.issue.number.toString()
+                }
+              });
+              
+              console.log('Workflow dispatched successfully');
+            } catch (error) {
+              console.error('Failed to dispatch workflow:', error);
+              throw error;
+            }
+      
+      - name: Comment success
+        if: steps.check-scope.outputs.scope_exists == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `🤖 **Workflow triggered successfully!**
+              
+Creating ${{ steps.check-scope.outputs.slice_count }} vertical slice issues...
+              
+Monitor progress: [Actions](https://github.com/${context.repo.owner}/${context.repo.repo}/actions)
+              
+The issues will be:
+- Created with acceptance criteria and technical tasks
+- Added to the project board
+- Linked back to this intent issue`
+            });
+            
+            // Add rocket reaction to original comment
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'rocket'
+            });
+      
+      - name: Comment error - no scope
+        if: steps.check-scope.outputs.scope_exists == 'false'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `❌ **Error: No scope.json found**
+              
+Please run \`/scope #${context.issue.number}\` first to generate the scope, then try \`/accept-scope\` again.
+              
+The workflow expects to find \`.claude/out/scope.json\` in the repository.`
+            });
+            
+            // Add confused reaction to original comment
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'confused'
+            });
+
+  handle-status-update:
+    if: |
+      github.event.issue.number && 
+      startsWith(github.event.comment.body, '/status:') &&
+      github.event.comment.author_association != 'NONE'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      projects: write
+    
+    steps:
+      - name: Parse status command
+        id: parse
+        run: |
+          COMMENT="${{ github.event.comment.body }}"
+          STATUS=$(echo "$COMMENT" | sed -n 's/^\/status:\([a-z-]*\).*/\1/p')
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          
+          # Map status to label
+          case "$STATUS" in
+            todo) LABEL="status:todo" ;;
+            in-progress) LABEL="status:in-progress" ;;
+            review) LABEL="status:review" ;;
+            blocked) LABEL="status:blocked" ;;
+            done) LABEL="status:done" ;;
+            *) LABEL="" ;;
+          esac
+          echo "label=$LABEL" >> $GITHUB_OUTPUT
+      
+      - name: Update issue labels
+        if: steps.parse.outputs.label != ''
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const newLabel = '${{ steps.parse.outputs.label }}';
+            
+            // Get current labels
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            
+            // Remove old status labels
+            const labelsToKeep = issue.labels
+              .filter(label => !label.name.startsWith('status:'))
+              .map(label => label.name);
+            
+            // Add new status label
+            labelsToKeep.push(newLabel);
+            
+            // Update labels
+            await github.rest.issues.setLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: labelsToKeep
+            });
+            
+            // Add reaction to confirm
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: '+1'
+            });
+            
+            // Comment with status update
+            const statusEmoji = {
+              'status:todo': '📋',
+              'status:in-progress': '🚀',
+              'status:review': '👀',
+              'status:blocked': '🚫',
+              'status:done': '✅'
+            };
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `${statusEmoji[newLabel]} Status updated to **${newLabel.replace('status:', '')}**`
+            });

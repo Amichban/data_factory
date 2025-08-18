@@ -1,0 +1,146 @@
+{
+  "version": "1.0.0",
+  "name": "Solo Software Factory",
+  "description": "AI-augmented development workflow template",
+  
+  "context": {
+    "maxTokens": 200000,
+    "preserveHistory": true,
+    "smartSummary": true,
+    "contextManagement": {
+      "strategy": "sliding-window",
+      "maxMessages": 50,
+      "summaryThreshold": 0.8,
+      "priorityFiles": [
+        "CLAUDE.md",
+        ".claude/PROJECT_STATE.md",
+        "user-stories/**/*.md",
+        "slices/**/current.yaml"
+      ]
+    }
+  },
+
+  "memory": {
+    "persistent": true,
+    "autoSave": true,
+    "saveInterval": 300,
+    "memoryFiles": [
+      ".claude/PROJECT_STATE.md",
+      ".claude/DECISIONS.md",
+      ".claude/LEARNED_PATTERNS.md"
+    ]
+  },
+
+  "hooks": {
+    "enabled": true,
+    "preCommit": {
+      "enabled": true,
+      "commands": [
+        "npm run lint",
+        "npm test",
+        "pytest",
+        "detect-secrets scan"
+      ]
+    },
+    "postCommit": {
+      "enabled": true,
+      "commands": [
+        "echo 'Commit successful: {{message}}'"
+      ]
+    },
+    "preAction": {
+      "enabled": true,
+      "validate": true,
+      "checkQuality": true,
+      "minQualityScore": 7.0
+    },
+    "postAction": {
+      "enabled": true,
+      "updateState": true,
+      "generateTests": true
+    }
+  },
+
+  "agents": {
+    "parallelization": true,
+    "maxConcurrent": 3,
+    "defaultTimeout": 300,
+    "retryOnFailure": true,
+    "maxRetries": 2
+  },
+
+  "workflow": {
+    "enforceQualityGates": true,
+    "autoGenerateTests": true,
+    "incrementalUI": true,
+    "verticalSlicing": true,
+    "continuousValidation": true
+  },
+
+  "integrations": {
+    "github": {
+      "enabled": true,
+      "autoCreateIssues": true,
+      "linkPullRequests": true,
+      "updateProjectBoard": true,
+      "requireApproval": false
+    },
+    "mcp": {
+      "enabled": false,
+      "servers": []
+    }
+  },
+
+  "security": {
+    "scanForSecrets": true,
+    "validateInputs": true,
+    "enforceHTTPS": true,
+    "rateLimit": {
+      "enabled": true,
+      "maxRequests": 100,
+      "windowSeconds": 60
+    }
+  },
+
+  "testing": {
+    "autoGenerate": true,
+    "runOnSave": false,
+    "coverage": {
+      "minimum": 80,
+      "enforced": false
+    },
+    "types": [
+      "unit",
+      "integration",
+      "acceptance",
+      "e2e"
+    ]
+  },
+
+  "documentation": {
+    "autoUpdate": true,
+    "generateFromCode": true,
+    "includeExamples": true,
+    "formats": ["markdown", "openapi"]
+  },
+
+  "performance": {
+    "monitoring": true,
+    "alerts": {
+      "enabled": false,
+      "thresholds": {
+        "responseTime": 1000,
+        "errorRate": 0.01
+      }
+    }
+  },
+
+  "customCommands": {
+    "aliases": {
+      "build": "make build",
+      "test": "make test",
+      "dev": "make dev",
+      "deploy": "make deploy"
+    }
+  }
+}

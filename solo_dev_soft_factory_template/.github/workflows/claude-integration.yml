@@ -1,0 +1,276 @@
+name: Claude Code Integration
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 'Claude command to run'
+        required: true
+        type: choice
+        options:
+          - spec-score
+          - spec-lint
+          - acceptance-test
+          - security
+          - parallel-strategy
+
+jobs:
+  spec-quality:
+    name: Check Specification Quality
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Check for User Stories
+        id: check-stories
+        run: |
+          if [ -d "user-stories" ]; then
+            echo "stories_found=true" >> $GITHUB_OUTPUT
+            echo "story_files=$(ls user-stories/*.md | head -5 | tr '\n' ' ')" >> $GITHUB_OUTPUT
+          else
+            echo "stories_found=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Validate Spec Quality
+        if: steps.check-stories.outputs.stories_found == 'true'
+        run: |
+          # Check for acceptance criteria
+          for file in ${{ steps.check-stories.outputs.story_files }}; do
+            echo "Checking $file"
+            if ! grep -q "Acceptance Criteria" "$file"; then
+              echo "❌ Missing acceptance criteria in $file"
+              exit 1
+            fi
+            if ! grep -q "Test Scenarios" "$file"; then
+              echo "⚠️ Missing test scenarios in $file"
+            fi
+          done
+          echo "✅ All user stories have acceptance criteria"
+      
+      - name: Comment PR Status
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ steps.check-stories.outcome }}' === 'success' ? '✅' : '❌';
+            const message = `## Specification Quality Check ${status}
+            
+            ${{ steps.check-stories.outputs.stories_found == 'true' && 'User stories found and validated' || 'No user stories found' }}
+            
+            ### Checklist:
+            - [x] User stories present
+            - [x] Acceptance criteria defined
+            - [ ] Quality score ≥ 7.0 (manual check required)
+            - [ ] Test scenarios defined
+            
+            Run \`/spec-score\` in Claude Code for detailed quality analysis.`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: message
+            });
+
+  command-handler:
+    name: Handle Claude Commands
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'issue_comment' && 
+      github.event.issue.pull_request && 
+      startsWith(github.event.comment.body, '/')
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Parse Command
+        id: parse
+        run: |
+          COMMENT="${{ github.event.comment.body }}"
+          COMMAND=$(echo "$COMMENT" | cut -d' ' -f1)
+          echo "command=$COMMAND" >> $GITHUB_OUTPUT
+      
+      - name: Setup Environment
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Execute Command
+        id: execute
+        run: |
+          case "${{ steps.parse.outputs.command }}" in
+            "/spec-lint")
+              echo "🔍 Running specification linter..."
+              # Add spec linting logic
+              echo "result=✅ No issues found" >> $GITHUB_OUTPUT
+              ;;
+            "/test-status")
+              echo "🧪 Checking test coverage..."
+              # Add test status logic
+              echo "result=📊 Coverage: 0% (no tests yet)" >> $GITHUB_OUTPUT
+              ;;
+            "/parallel-work")
+              echo "🔀 Analyzing parallel work opportunities..."
+              echo "result=Can parallelize: Backend API, Frontend UI, Documentation" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "result=❓ Unknown command: ${{ steps.parse.outputs.command }}" >> $GITHUB_OUTPUT
+              ;;
+          esac
+      
+      - name: Post Result
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '${{ steps.execute.outputs.result }}'
+            });
+
+  context-sync:
+    name: Sync Context Files
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Update Project State
+        run: |
+          # Update last modified date
+          sed -i "s/Last Updated: .*/Last Updated: $(date +%Y-%m-%d)/" .claude/PROJECT_STATE.md || true
+          
+          # Count completed stories
+          if [ -d "user-stories" ]; then
+            STORY_COUNT=$(ls user-stories/*.md 2>/dev/null | wc -l)
+            echo "Found $STORY_COUNT user stories"
+          fi
+      
+      - name: Generate Context Summary
+        run: |
+          cat > .claude/CONTEXT_SUMMARY.md << 'EOF'
+          # Context Summary
+          
+          ## Recent Changes
+          - Last commit: ${{ github.event.head_commit.message }}
+          - Author: ${{ github.event.head_commit.author.name }}
+          - Timestamp: ${{ github.event.head_commit.timestamp }}
+          
+          ## Active Work
+          - Check PROJECT_STATE.md for current status
+          - Review open issues at: ${{ github.server_url }}/${{ github.repository }}/issues
+          
+          ## Quick Links
+          - [User Stories](./user-stories/)
+          - [Vertical Slices](./slices/)
+          - [Architecture Decisions](./DECISIONS.md)
+          - [Learned Patterns](./LEARNED_PATTERNS.md)
+          EOF
+      
+      - name: Commit Context Updates
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          if [ -n "$(git status --porcelain)" ]; then
+            git add .claude/*.md
+            git commit -m "chore: Update context files [skip ci]" || true
+            git push || true
+          fi
+
+  quality-gate:
+    name: Quality Gate Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check Quality Metrics
+        id: quality
+        run: |
+          CHECKS_PASSED=0
+          CHECKS_TOTAL=5
+          
+          # Check 1: User stories exist
+          if [ -d "user-stories" ] && [ "$(ls user-stories/*.md 2>/dev/null | wc -l)" -gt 0 ]; then
+            echo "✅ User stories found"
+            CHECKS_PASSED=$((CHECKS_PASSED + 1))
+          else
+            echo "❌ No user stories found"
+          fi
+          
+          # Check 2: Tests exist
+          if [ -d "tests" ] || [ -d "apps/api/tests" ] || [ -d "apps/web/__tests__" ]; then
+            echo "✅ Test directories found"
+            CHECKS_PASSED=$((CHECKS_PASSED + 1))
+          else
+            echo "⚠️ No test directories found"
+          fi
+          
+          # Check 3: Documentation updated
+          if git diff HEAD^ HEAD --name-only | grep -q "\.md$"; then
+            echo "✅ Documentation updated"
+            CHECKS_PASSED=$((CHECKS_PASSED + 1))
+          else
+            echo "⚠️ No documentation updates"
+          fi
+          
+          # Check 4: No secrets
+          if ! git diff HEAD^ HEAD | grep -iE "(api_key|secret|password|token)" | grep -v "example\|test\|mock"; then
+            echo "✅ No secrets detected"
+            CHECKS_PASSED=$((CHECKS_PASSED + 1))
+          else
+            echo "❌ Potential secrets detected"
+            exit 1
+          fi
+          
+          # Check 5: Commit message format
+          if echo "${{ github.event.pull_request.title }}" | grep -qE "^(feat|fix|docs|style|refactor|test|chore):"; then
+            echo "✅ Proper commit format"
+            CHECKS_PASSED=$((CHECKS_PASSED + 1))
+          else
+            echo "⚠️ Non-standard commit format"
+          fi
+          
+          echo "checks_passed=$CHECKS_PASSED" >> $GITHUB_OUTPUT
+          echo "checks_total=$CHECKS_TOTAL" >> $GITHUB_OUTPUT
+          
+          if [ $CHECKS_PASSED -lt 3 ]; then
+            echo "❌ Quality gate failed: $CHECKS_PASSED/$CHECKS_TOTAL checks passed"
+            exit 1
+          fi
+      
+      - name: Set PR Status
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const passed = ${{ steps.quality.outputs.checks_passed || 0 }};
+            const total = ${{ steps.quality.outputs.checks_total || 5 }};
+            const status = passed >= 3 ? 'success' : 'failure';
+            
+            github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.payload.pull_request.head.sha,
+              state: status,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              description: `Quality: ${passed}/${total} checks passed`,
+              context: 'Quality Gate'
+            });

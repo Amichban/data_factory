@@ -1,0 +1,333 @@
+name: Project Board Automation
+
+on:
+  issues:
+    types: [opened, closed, reopened, labeled, unlabeled]
+  pull_request:
+    types: [opened, closed, ready_for_review, converted_to_draft]
+  issue_comment:
+    types: [created]
+
+jobs:
+  sync-to-project:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+      projects: write
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        run: |
+          npm install @octokit/graphql
+      
+      - name: Sync to Project Board
+        uses: actions/github-script@v6
+        env:
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        with:
+          script: |
+            // Skip if no PROJECT_TOKEN
+            if (!process.env.PROJECT_TOKEN) {
+              console.log('No PROJECT_TOKEN found, using label-based status tracking only');
+              return;
+            }
+            
+            const ProjectV2Manager = require('./.github/scripts/project-graphql.js');
+            const manager = new ProjectV2Manager(process.env.PROJECT_TOKEN);
+            
+            try {
+              // Get the project
+              const project = await manager.getProject(context.repo.owner, context.repo.repo);
+              console.log(`Found project: ${project.title}`);
+              
+              // Get field IDs
+              const statusField = project.fieldsByName['Status'];
+              if (!statusField || !statusField.options) {
+                console.log('No Status field found in project');
+                return;
+              }
+              
+              // Determine the issue/PR and desired status
+              let item = null;
+              let issueOrPr = null;
+              let desiredStatus = null;
+              
+              if (context.eventName === 'issues') {
+                issueOrPr = context.payload.issue;
+                
+                // Determine status based on event and labels
+                if (context.payload.action === 'closed') {
+                  desiredStatus = 'Done';
+                } else if (context.payload.action === 'opened') {
+                  desiredStatus = 'Todo';
+                } else if (context.payload.action === 'labeled' || context.payload.action === 'unlabeled') {
+                  // Check for status labels
+                  const statusLabel = issueOrPr.labels.find(l => l.name.startsWith('status:'));
+                  if (statusLabel) {
+                    const statusMap = {
+                      'status:todo': 'Todo',
+                      'status:in-progress': 'In Progress',
+                      'status:review': 'In Review',
+                      'status:blocked': 'Blocked',
+                      'status:done': 'Done'
+                    };
+                    desiredStatus = statusMap[statusLabel.name];
+                  }
+                }
+              } else if (context.eventName === 'pull_request') {
+                issueOrPr = context.payload.pull_request;
+                
+                if (context.payload.action === 'closed' && issueOrPr.merged) {
+                  desiredStatus = 'Done';
+                } else if (context.payload.action === 'closed') {
+                  // PR closed without merge - no status change
+                  return;
+                } else if (context.payload.action === 'ready_for_review') {
+                  desiredStatus = 'In Review';
+                } else if (context.payload.action === 'converted_to_draft') {
+                  desiredStatus = 'In Progress';
+                } else if (context.payload.action === 'opened') {
+                  desiredStatus = issueOrPr.draft ? 'In Progress' : 'In Review';
+                }
+              } else if (context.eventName === 'issue_comment') {
+                // Handle status command comments (already processed by issue-comment-trigger)
+                // This is just for project board sync
+                if (!context.payload.comment.body.startsWith('/status:')) {
+                  return;
+                }
+                
+                issueOrPr = context.payload.issue;
+                const statusCommand = context.payload.comment.body.match(/^\/status:([a-z-]+)/);
+                if (statusCommand) {
+                  const statusMap = {
+                    'todo': 'Todo',
+                    'in-progress': 'In Progress',
+                    'review': 'In Review',
+                    'blocked': 'Blocked',
+                    'done': 'Done'
+                  };
+                  desiredStatus = statusMap[statusCommand[1]];
+                }
+              }
+              
+              if (!issueOrPr || !desiredStatus) {
+                console.log('No status change needed');
+                return;
+              }
+              
+              console.log(`Setting status to: ${desiredStatus}`);
+              
+              // Find the status option
+              const statusOption = statusField.options.find(o => o.name === desiredStatus);
+              if (!statusOption) {
+                console.log(`Status option '${desiredStatus}' not found`);
+                return;
+              }
+              
+              // Check if item is already in project
+              const projectItems = await manager.getProjectItems(project.id);
+              const existingItem = projectItems.find(item => 
+                item.content && item.content.number === issueOrPr.number
+              );
+              
+              if (existingItem) {
+                // Update existing item
+                await manager.updateSingleSelectField(
+                  project.id,
+                  existingItem.id,
+                  statusField.id,
+                  statusOption.id
+                );
+                console.log(`Updated status for #${issueOrPr.number} to ${desiredStatus}`);
+              } else {
+                // Add to project and set status
+                const newItem = await manager.addIssueWithStatus(
+                  project.id,
+                  issueOrPr.node_id,
+                  statusField.id,
+                  statusOption.id
+                );
+                console.log(`Added #${issueOrPr.number} to project with status ${desiredStatus}`);
+                
+                // Also set other fields if this is a new issue
+                if (context.eventName === 'issues' && context.payload.action === 'opened') {
+                  // Set Points if label exists
+                  const pointsLabel = issueOrPr.labels.find(l => l.name.startsWith('points:'));
+                  if (pointsLabel) {
+                    const pointsField = project.fieldsByName['Points'];
+                    if (pointsField) {
+                      const points = parseInt(pointsLabel.name.split(':')[1]);
+                      await manager.updateNumberField(project.id, newItem.id, pointsField.id, points);
+                    }
+                  }
+                  
+                  // Set Risk if label exists
+                  const riskLabel = issueOrPr.labels.find(l => l.name.startsWith('risk:'));
+                  if (riskLabel) {
+                    const riskField = project.fieldsByName['Risk'];
+                    if (riskField && riskField.options) {
+                      const riskLevel = riskLabel.name.split(':')[1];
+                      const riskOption = riskField.options.find(o => 
+                        o.name.toLowerCase() === riskLevel.toLowerCase()
+                      );
+                      if (riskOption) {
+                        await manager.updateSingleSelectField(
+                          project.id,
+                          newItem.id,
+                          riskField.id,
+                          riskOption.id
+                        );
+                      }
+                    }
+                  }
+                }
+              }
+              
+              // Update meta issue if this is a vertical slice
+              if (issueOrPr.labels && issueOrPr.labels.some(l => l.name === 'vertical-slice')) {
+                await updateMetaIssue();
+              }
+              
+            } catch (error) {
+              console.error('Project sync failed:', error.message);
+              // Don't fail the workflow, just log the error
+            }
+            
+            // Helper function to update meta issue checkboxes
+            async function updateMetaIssue() {
+              try {
+                // Find meta issues that reference this issue
+                const metaIssues = await github.rest.issues.listForRepo({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  labels: 'meta,scope-tracking',
+                  state: 'open'
+                });
+                
+                for (const meta of metaIssues.data) {
+                  if (meta.body && meta.body.includes(`#${issueOrPr.number}`)) {
+                    // Update checkbox based on issue state
+                    let updatedBody = meta.body;
+                    const checkbox = issueOrPr.state === 'closed' ? '[x]' : '[ ]';
+                    const pattern = new RegExp(`- \\[[x ]\\] #${issueOrPr.number}`, 'g');
+                    updatedBody = updatedBody.replace(pattern, `- ${checkbox} #${issueOrPr.number}`);
+                    
+                    if (updatedBody !== meta.body) {
+                      await github.rest.issues.update({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: meta.number,
+                        body: updatedBody
+                      });
+                      console.log(`Updated meta issue #${meta.number}`);
+                    }
+                    
+                    // Check if all slices are complete
+                    const incompleteCount = (updatedBody.match(/- \[ \] #\d+/g) || []).length;
+                    if (incompleteCount === 0 && meta.state === 'open') {
+                      // All slices complete, close meta issue
+                      await github.rest.issues.update({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: meta.number,
+                        state: 'closed',
+                        state_reason: 'completed'
+                      });
+                      
+                      await github.rest.issues.createComment({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: meta.number,
+                        body: '🎉 **All vertical slices complete!** The scope has been fully implemented.'
+                      });
+                    }
+                  }
+                }
+              } catch (error) {
+                console.error('Failed to update meta issue:', error.message);
+              }
+            }
+
+  # Ensure status labels are synchronized
+  sync-status-labels:
+    if: github.event_name == 'issues' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    
+    steps:
+      - name: Sync status labels
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const issueOrPr = context.payload.issue || context.payload.pull_request;
+            
+            // Skip if no labels
+            if (!issueOrPr.labels || issueOrPr.labels.length === 0) {
+              return;
+            }
+            
+            // Count status labels
+            const statusLabels = issueOrPr.labels.filter(l => l.name.startsWith('status:'));
+            
+            // If multiple status labels, keep only the most recent one
+            if (statusLabels.length > 1) {
+              console.log('Multiple status labels found, cleaning up...');
+              
+              // Determine the correct status based on state
+              let correctStatus = 'status:todo';
+              if (issueOrPr.state === 'closed') {
+                correctStatus = 'status:done';
+              } else if (statusLabels.find(l => l.name === 'status:in-progress')) {
+                correctStatus = 'status:in-progress';
+              } else if (statusLabels.find(l => l.name === 'status:review')) {
+                correctStatus = 'status:review';
+              } else if (statusLabels.find(l => l.name === 'status:blocked')) {
+                correctStatus = 'status:blocked';
+              }
+              
+              // Remove all status labels except the correct one
+              const labelsToKeep = issueOrPr.labels
+                .filter(l => !l.name.startsWith('status:') || l.name === correctStatus)
+                .map(l => l.name);
+              
+              // Ensure correct status is included
+              if (!labelsToKeep.includes(correctStatus)) {
+                labelsToKeep.push(correctStatus);
+              }
+              
+              // Update labels
+              const updateFunc = context.payload.issue 
+                ? github.rest.issues.setLabels
+                : github.rest.issues.setLabels; // PRs use same API
+              
+              await updateFunc({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueOrPr.number,
+                labels: labelsToKeep
+              });
+              
+              console.log(`Updated labels to maintain single status: ${correctStatus}`);
+            }
+            
+            // Add default status label if none exists
+            if (statusLabels.length === 0 && issueOrPr.state === 'open') {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueOrPr.number,
+                labels: ['status:todo']
+              });
+              console.log('Added default status:todo label');
+            }

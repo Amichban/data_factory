@@ -1,0 +1,22 @@
+# Requirements for Python 3.13+
+# Use this file if you're on Python 3.13 or later
+
+# Core dependencies
+fastapi==0.110.0
+uvicorn[standard]==0.29.0
+
+# Database - Updated for Python 3.13
+sqlalchemy==2.0.29
+alembic==1.13.1
+psycopg[binary]==3.2.1  # psycopg3 for Python 3.13+ compatibility
+redis==5.0.3
+
+# Validation and Settings - Updated for Python 3.13
+pydantic==2.10.4  # Latest version with Python 3.13 support
+pydantic-settings==2.7.0  # Compatible with pydantic 2.10
+python-dotenv==1.0.1
+
+# Additional utilities (optional)
+python-multipart==0.0.9  # For file uploads
+httpx==0.27.0  # For async HTTP client
+python-jose[cryptography]==3.3.0  # For JWT tokens

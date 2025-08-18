@@ -1,0 +1,19 @@
+# Core dependencies
+fastapi==0.110.0
+uvicorn[standard]==0.29.0
+
+# Database
+sqlalchemy==2.0.29
+alembic==1.13.1
+psycopg2-binary==2.9.9  # For Python 3.9-3.12
+redis==5.0.3
+
+# Validation and Settings
+pydantic==2.6.3
+pydantic-settings==2.2.1
+python-dotenv==1.0.1
+
+# Additional utilities (optional)
+python-multipart==0.0.9  # For file uploads
+httpx==0.27.0  # For async HTTP client
+python-jose[cryptography]==3.3.0  # For JWT tokens

@@ -1,0 +1,481 @@
+name: Setup Database Connection
+
+on:
+  workflow_dispatch:
+    inputs:
+      database_type:
+        description: 'Database type'
+        required: true
+        type: choice
+        options:
+          - postgresql
+          - mysql
+          - mongodb
+          - firestore
+          - supabase
+          - existing-cloud-sql
+      connection_string:
+        description: 'Connection string (will be stored as secret)'
+        required: false
+        type: string
+      generate_models:
+        description: 'Generate models from existing schema?'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  setup-database:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install sqlalchemy alembic psycopg2-binary pymysql
+          npm install -g prisma @prisma/client
+      
+      - name: Configure Database Connection
+        id: configure
+        env:
+          DB_TYPE: ${{ inputs.database_type }}
+          CONNECTION_STRING: ${{ inputs.connection_string }}
+        run: |
+          echo "🔧 Configuring $DB_TYPE database connection..."
+          
+          # Create database configuration file
+          cat > apps/api/app/config/database.py << 'EOF'
+          import os
+          from sqlalchemy import create_engine
+          from sqlalchemy.ext.declarative import declarative_base
+          from sqlalchemy.orm import sessionmaker
+          
+          # Database configuration
+          DATABASE_TYPE = os.getenv('DATABASE_TYPE', '${{ inputs.database_type }}')
+          DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://dev:dev@localhost:5432/app')
+          
+          # Create engine with appropriate settings
+          if DATABASE_TYPE == 'postgresql':
+              engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+          elif DATABASE_TYPE == 'mysql':
+              engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=3600)
+          elif DATABASE_TYPE == 'mongodb':
+              # MongoDB requires different approach
+              from pymongo import MongoClient
+              client = MongoClient(DATABASE_URL)
+              db = client.get_default_database()
+          else:
+              engine = create_engine(DATABASE_URL)
+          
+          SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+          Base = declarative_base()
+          
+          def get_db():
+              db = SessionLocal()
+              try:
+                  yield db
+              finally:
+                  db.close()
+          EOF
+          
+          echo "✅ Database configuration created"
+      
+      - name: Introspect Existing Database
+        if: inputs.generate_models == true && inputs.connection_string != ''
+        env:
+          DATABASE_URL: ${{ inputs.connection_string }}
+        run: |
+          echo "🔍 Introspecting existing database schema..."
+          
+          # Create temporary introspection script
+          cat > introspect.py << 'EOF'
+          import os
+          import sys
+          from sqlalchemy import create_engine, MetaData, Table
+          from sqlalchemy.orm import declarative_base
+          from sqlalchemy.ext.automap import automap_base
+          
+          DATABASE_URL = os.getenv('DATABASE_URL')
+          if not DATABASE_URL:
+              print("❌ No DATABASE_URL provided")
+              sys.exit(1)
+          
+          try:
+              # Connect to database
+              engine = create_engine(DATABASE_URL)
+              
+              # Reflect existing database
+              Base = automap_base()
+              Base.prepare(engine, reflect=True)
+              
+              # Generate models file
+              with open('apps/api/app/models/generated.py', 'w') as f:
+                  f.write('"""Auto-generated models from existing database"""\n\n')
+                  f.write('from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean, Float\n')
+                  f.write('from sqlalchemy.orm import relationship\n')
+                  f.write('from app.config.database import Base\n\n')
+                  
+                  # Write each table as a model
+                  for table_name in Base.classes.keys():
+                      table_class = Base.classes[table_name]
+                      f.write(f'\nclass {table_name.title()}(Base):\n')
+                      f.write(f'    __tablename__ = "{table_name}"\n\n')
+                      
+                      # Get table metadata
+                      table = Table(table_name, MetaData(), autoload_with=engine)
+                      
+                      # Write columns
+                      for column in table.columns:
+                          col_type = str(column.type).split('(')[0]
+                          col_str = f'    {column.name} = Column({col_type}'
+                          if column.primary_key:
+                              col_str += ', primary_key=True'
+                          if column.nullable == False and not column.primary_key:
+                              col_str += ', nullable=False'
+                          col_str += ')\n'
+                          f.write(col_str)
+                      
+                      # Write relationships (basic)
+                      for fk in table.foreign_keys:
+                          ref_table = fk.column.table.name
+                          f.write(f'    # {column.name} -> {ref_table}\n')
+              
+              print(f"✅ Generated {len(Base.classes)} models from existing database")
+              
+              # Also generate Prisma schema if using Prisma
+              if '${{ inputs.database_type }}' in ['postgresql', 'mysql']:
+                  os.system(f'cd apps/api && npx prisma db pull --url="{DATABASE_URL}"')
+                  print("✅ Generated Prisma schema")
+                  
+          except Exception as e:
+              print(f"❌ Error introspecting database: {e}")
+              sys.exit(1)
+          EOF
+          
+          python introspect.py
+      
+      - name: Create Database Migration Scripts
+        run: |
+          echo "📝 Creating database utility scripts..."
+          
+          # Create migration helper
+          cat > apps/api/scripts/db-migrate.sh << 'EOF'
+          #!/bin/bash
+          # Database migration helper script
+          
+          set -e
+          
+          echo "🔄 Running database migrations..."
+          
+          # Check if using Alembic
+          if [ -f "alembic.ini" ]; then
+              echo "Using Alembic for migrations"
+              alembic upgrade head
+          fi
+          
+          # Check if using Prisma
+          if [ -f "prisma/schema.prisma" ]; then
+              echo "Using Prisma for migrations"
+              npx prisma migrate deploy
+          fi
+          
+          echo "✅ Migrations complete"
+          EOF
+          
+          chmod +x apps/api/scripts/db-migrate.sh
+          
+          # Create backup script
+          cat > apps/api/scripts/db-backup.sh << 'EOF'
+          #!/bin/bash
+          # Database backup script
+          
+          set -e
+          
+          DB_TYPE="${DATABASE_TYPE:-postgresql}"
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          BACKUP_DIR="backups"
+          
+          mkdir -p $BACKUP_DIR
+          
+          if [ "$DB_TYPE" == "postgresql" ]; then
+              echo "📦 Backing up PostgreSQL database..."
+              pg_dump $DATABASE_URL > "$BACKUP_DIR/backup_$TIMESTAMP.sql"
+          elif [ "$DB_TYPE" == "mysql" ]; then
+              echo "📦 Backing up MySQL database..."
+              mysqldump --single-transaction --routines --triggers --add-drop-database $DATABASE_URL > "$BACKUP_DIR/backup_$TIMESTAMP.sql"
+          else
+              echo "⚠️  Backup not implemented for $DB_TYPE"
+              exit 1
+          fi
+          
+          echo "✅ Backup saved to $BACKUP_DIR/backup_$TIMESTAMP.sql"
+          EOF
+          
+          chmod +x apps/api/scripts/db-backup.sh
+      
+      - name: Update Environment Configuration
+        run: |
+          echo "📝 Updating environment configuration..."
+          
+          # Update .env.example
+          cat >> .env.example << EOF
+          
+          # Database Configuration (Updated by setup-database workflow)
+          DATABASE_TYPE=${{ inputs.database_type }}
+          # DATABASE_URL is stored as a secret
+          
+          # Database Options
+          DB_POOL_SIZE=10
+          DB_POOL_TIMEOUT=30
+          DB_POOL_RECYCLE=3600
+          DB_ECHO=false
+          
+          # For existing databases
+          DB_SCHEMA_SYNC=false  # Don't auto-create tables
+          DB_MIGRATIONS_AUTO=false  # Don't auto-run migrations
+          EOF
+          
+          # Create database documentation
+          cat > docs/DATABASE_SETUP.md << 'EOF'
+          # Database Configuration
+          
+          This project is configured to work with: **${{ inputs.database_type }}**
+          
+          ## Connection Setup
+          
+          The database connection is configured through the `DATABASE_URL` environment variable.
+          
+          ### Local Development
+          
+          1. Copy `.env.example` to `.env`
+          2. Set your `DATABASE_URL` in `.env`
+          
+          ### Production
+          
+          Set `DATABASE_URL` as a secret in your deployment platform.
+          
+          ## Working with Existing Database
+          
+          This project has been configured to connect to an existing database.
+          
+          ### Generated Models
+          
+          Models have been auto-generated from your existing schema:
+          - SQLAlchemy models: `apps/api/app/models/generated.py`
+          - Prisma schema: `apps/api/prisma/schema.prisma` (if applicable)
+          
+          ### Migrations
+          
+          Since you're working with an existing database:
+          
+          1. **Be careful with migrations** - Don't auto-generate migrations that would modify existing tables
+          2. **Create new tables only** - Add new features in new tables when possible
+          3. **Use views for complex queries** - Instead of modifying existing tables
+          
+          ### Available Scripts
+          
+          - `apps/api/scripts/db-migrate.sh` - Run migrations
+          - `apps/api/scripts/db-backup.sh` - Backup database
+          
+          ## Schema Documentation
+          
+          Run these commands to generate schema documentation:
+          
+          ```bash
+          # Generate ERD diagram
+          cd apps/api
+          python scripts/generate-erd.py
+          
+          # Generate schema docs
+          python scripts/document-schema.py
+          ```
+          
+          ## Best Practices
+          
+          1. **Never modify existing production tables directly**
+          2. **Always backup before migrations**
+          3. **Test migrations on a copy first**
+          4. **Use feature flags for new functionality**
+          5. **Keep existing and new schemas separate**
+          
+          ## Database Access Patterns
+          
+          ### Read-Only Access
+          For existing tables, consider read-only access:
+          
+          ```python
+          class ExistingTable(Base):
+              __tablename__ = 'existing_table'
+              __table_args__ = {'extend_existing': True, 'autoload': True}
+          ```
+          
+          ### New Features
+          Create new tables for new features:
+          
+          ```python
+          class NewFeature(Base):
+              __tablename__ = 'app_new_feature'  # Prefix with app_
+              # Your columns here
+          ```
+          EOF
+      
+      - name: Create Schema Documentation Scripts
+        run: |
+          echo "📚 Creating schema documentation scripts..."
+          
+          # ERD generation script
+          cat > apps/api/scripts/generate-erd.py << 'EOF'
+          #!/usr/bin/env python3
+          """Generate ERD diagram from database schema"""
+          
+          import os
+          from sqlalchemy import create_engine, MetaData
+          from sqlalchemy_schemadisplay import create_schema_graph
+          
+          DATABASE_URL = os.getenv('DATABASE_URL')
+          
+          if DATABASE_URL:
+              engine = create_engine(DATABASE_URL)
+              metadata = MetaData()
+              metadata.reflect(bind=engine)
+              
+              # Generate graph
+              graph = create_schema_graph(
+                  metadata=metadata,
+                  show_datatypes=True,
+                  show_indexes=True,
+                  rankdir='LR',
+                  concentrate=False
+              )
+              
+              graph.write_png('docs/database-erd.png')
+              print("✅ ERD saved to docs/database-erd.png")
+          else:
+              print("❌ No DATABASE_URL configured")
+          EOF
+          
+          chmod +x apps/api/scripts/generate-erd.py
+      
+      - name: Commit Configuration
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          git add -A
+          git commit -m "feat: Configure ${{ inputs.database_type }} database connection
+          
+          - Added database configuration
+          - Generated models from existing schema (if applicable)
+          - Created migration and backup scripts
+          - Updated documentation
+          
+          Database type: ${{ inputs.database_type }}
+          Auto-generated: ${{ inputs.generate_models }}
+          
+          Next steps:
+          1. Add DATABASE_URL to secrets
+          2. Review generated models
+          3. Test connection
+          " || echo "No changes to commit"
+          
+          git push
+      
+      - name: Create Setup Summary
+        run: |
+          echo "## ✅ Database Setup Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Database Type:** ${{ inputs.database_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Models Generated:** ${{ inputs.generate_models }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Add \`DATABASE_URL\` to repository secrets" >> $GITHUB_STEP_SUMMARY
+          echo "2. Review generated models in \`apps/api/app/models/\`" >> $GITHUB_STEP_SUMMARY
+          echo "3. Test database connection with \`make dev\`" >> $GITHUB_STEP_SUMMARY
+          echo "4. Read [Database Setup Guide](docs/DATABASE_SETUP.md)" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Create follow-up issue
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const issueBody = `## 🗄️ Database Configuration Complete
+            
+            The database setup workflow has completed successfully.
+            
+            ### Configuration Summary
+            - **Database Type:** ${{ inputs.database_type }}
+            - **Models Generated:** ${{ inputs.generate_models }}
+            
+            ### ✅ Completed Actions
+            - [x] Database configuration files created
+            - [x] Connection helper scripts added
+            - [x] Environment variables configured
+            ${`${{ inputs.generate_models }}` === 'true' ? '- [x] Models generated from existing schema' : ''}
+            
+            ### 📋 Required Actions
+            
+            1. **Add DATABASE_URL Secret**
+               - Go to Settings → Secrets → Actions
+               - Add \`DATABASE_URL\` with your connection string
+               - Format: \`postgresql://user:pass@host:port/dbname\`
+            
+            2. **Review Generated Files**
+               - Check \`apps/api/app/models/generated.py\` for accuracy
+               - Review \`apps/api/app/config/database.py\` settings
+               - Verify \`docs/DATABASE_SETUP.md\` for your team
+            
+            3. **Test Connection**
+               \`\`\`bash
+               # Set DATABASE_URL in .env
+               make dev
+               
+               # Test with curl
+               curl http://localhost:8000/health
+               \`\`\`
+            
+            4. **Security Checklist**
+               - [ ] DATABASE_URL is in secrets, not committed
+               - [ ] Read-only user for existing tables (if applicable)
+               - [ ] Backup strategy in place
+               - [ ] Migration approval process defined
+            
+            ### 🚨 Important Notes
+            
+            ${`${{ inputs.database_type }}` === 'existing-cloud-sql' ? `
+            **Working with Existing Database:**
+            - Be extremely careful with migrations
+            - Don't modify existing table structures
+            - Create new tables with app_ prefix
+            - Consider using database views for complex queries
+            - Always backup before any schema changes
+            ` : `
+            **New Database Setup:**
+            - Run initial migrations with \`alembic upgrade head\`
+            - Seed initial data if needed
+            - Configure regular backups
+            `}
+            
+            ### 📚 Documentation
+            
+            - [Database Setup Guide](docs/DATABASE_SETUP.md)
+            - [Migration Guide](docs/migrations/README.md)
+            - [Backup/Restore Procedures](docs/operations/backup.md)
+            
+            ---
+            Close this issue once database connection is verified.`;
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🗄️ Complete Database Setup',
+              body: issueBody,
+              labels: ['setup', 'database', 'documentation']
+            });
